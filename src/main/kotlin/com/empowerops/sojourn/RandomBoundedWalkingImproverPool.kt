@@ -13,7 +13,7 @@ class RandomBoundedWalkingImproverPool private constructor(
 
     override val name = "Improver"
 
-    override fun makeNewPointGeneration(pointCount: Int, existingPoints: ImmutableList<InputVector>): ImmutableList<InputVector> {
+    override fun makeNewPointGeneration(pointCount: Int, existingPoints: PersistentList<InputVector>): PersistentList<InputVector> {
 
         if(existingPoints.isEmpty()) {
             trace { "improver called without seeds" }

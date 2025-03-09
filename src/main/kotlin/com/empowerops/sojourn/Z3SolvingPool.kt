@@ -20,7 +20,7 @@ class Z3SolvingPool private constructor(
 
     override val name: String = "Z3-SMT"
 
-    private val recompiler = BabelCompiler()
+    private val recompiler = BabelCompiler
     private val z3 = Context()
 //    private val solver = z3 { Solver(Tactic("qfnra-nlsat")) }
 
@@ -82,9 +82,11 @@ class Z3SolvingPool private constructor(
 
         val currentStatus = status
 
-        if((currentStatus == null && newStatus != Status.SATISFIABLE) || newStatus < currentStatus) {
-            status = newStatus
-            problem = constraint
+        when {
+            currentStatus == null || newStatus < currentStatus -> {
+                status = newStatus
+                problem = constraint
+            }
         }
     }
 
@@ -193,7 +195,7 @@ class Z3SolvingPool private constructor(
 
     class UnsatisfiableConstraintsException(solver: String): RuntimeException(solver)
 
-    override fun makeNewPointGeneration(pointCount: Int, existingPoints: ImmutableList<InputVector>): ImmutableList<InputVector> {
+    override fun makeNewPointGeneration(pointCount: Int, existingPoints: PersistentList<InputVector>): PersistentList<InputVector> {
         var pointCount = pointCount
 
         if(pointCount == 0) {
@@ -525,11 +527,8 @@ class Z3SolvingPool private constructor(
             exprs.push(when {
                 ctx.FLOAT() != null -> z3.mkReal(ctx.FLOAT().text)
                 ctx.INTEGER() != null -> z3.mkReal(ctx.INTEGER().text)
-                ctx.CONSTANT() != null -> when(val text = ctx.text.toLowerCase()){
-                    "pi" -> PI
-                    "e" -> E
-                    else -> transcodeFailure("constant $text")
-                }
+                ctx.PI() != null -> PI
+                ctx.EULERS_E() != null -> E
                 else -> transcodeFailure("constant ${ctx.text}")
             })
         }

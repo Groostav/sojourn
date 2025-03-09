@@ -4,11 +4,21 @@ package com.empowerops.sojourn
 import com.empowerops.babel.BabelExpression
 import com.microsoft.z3.Status
 import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.PersistentList
 import kotlinx.collections.immutable.immutableListOf
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.plus
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.produce
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.combineLatest
+import kotlinx.coroutines.flow.concatWith
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.selects.select
 import java.lang.IndexOutOfBoundsException
 import java.text.DecimalFormat
@@ -23,15 +33,15 @@ private data class DependencyGroup(var deps: Set<String>, var constraints: Set<B
 }
 
 sealed class ConstraintAnalysis
-sealed class Worthwhile(val results: ReceiveChannel<InputVector>): ConstraintAnalysis(), ReceiveChannel<InputVector> by results
-class Satisfiable(results: ReceiveChannel<InputVector>): Worthwhile(results)
-class Unknown(results: ReceiveChannel<InputVector>, val problemConstraint: BabelExpression?): Worthwhile(results)
+sealed class Worthwhile(results: Flow<InputVector>): ConstraintAnalysis(), Flow<InputVector> by results
+class Satisfiable(results: Flow<InputVector>): Worthwhile(results)
+class Unknown(results: Flow<InputVector>, val problemConstraint: BabelExpression?): Worthwhile(results)
 class Unsatisfiable(val problemConstraint: BabelExpression?): ConstraintAnalysis()
 
 fun CoroutineScope.makeSampleAgent(
     inputs: List<InputVariable>,
     constraints: Collection<BabelExpression>,
-    seeds: ImmutableList<InputVector> = immutableListOf(),
+    seeds: PersistentList<InputVector> = persistentListOf(),
     samplerSeed: Random = Random(),
     improverSeed: Random = Random()
 ): ConstraintAnalysis {
@@ -90,39 +100,24 @@ fun CoroutineScope.makeSampleAgent(
 //             TODO: it might make more sense to create a kind of composite constraint solving pool,
 //             the reason being is that we can then use the same load balancing as previous
 
-            val parts = dependencyGroups.associate { group ->
-                group to (startAgentGroup(inputs.filter { it.name in group.deps }, group.constraints, samplerSeed, improverSeed, seeds) as Worthwhile)
+            val parts: Map<DependencyGroup, Worthwhile> = dependencyGroups.associate { group ->
+                val startAgentGroup = startAgentGroup(
+                    inputs.filter { it.name in group.deps },
+                    group.constraints,
+                    samplerSeed,
+                    improverSeed,
+                    seeds
+                )
+                group to startAgentGroup as Worthwhile //safe cast because the global group was worthwhile.
             }
 
-            require(globalGroup is Worthwhile)
+            val flows = parts.map { (group, flow) ->
+                flow.map { vec -> group to vec }
+            }
 
-            val pts = globalGroup + produce<InputVector> {
-                try {
-                    while (isActive) {
-
-                        val pointsBySource = parts.mapValues { (_, channel) ->
-                            channel.receiveOrNull()
-                        }
-
-                        if (null in pointsBySource.values) {
-                            val extras = pointsBySource.filterValues { it != null }
-                            if (extras.any()) trace {
-                                val names = pointsBySource.entries.joinToString { (group, pt) ->
-                                    "${group.deps}->${pt?.let { "pt" } ?: "null"}"
-                                }
-                                "one or more dependency groups quit while one or more produced more results: $names"
-                            }
-
-                            return@produce
-                        }
-
-                        send(InputVector(pointsBySource.values.flatMap { it!!.entries }))
-                    }
-                }
-                finally {
-                    globalGroup.cancel()
-                    parts.values.forEach { it.cancel() }
-                }
+            val pts = combine(*flows.toTypedArray()) { groupVecPairs: Array<Pair<DependencyGroup, InputVector>> ->
+                val pointsBySource = groupVecPairs.toMap()
+                InputVector(pointsBySource.values.flatMap { it.entries })
             }
 
             return when(globalGroup){
@@ -134,19 +129,18 @@ fun CoroutineScope.makeSampleAgent(
     }
 }
 
-@UseExperimental(InternalCoroutinesApi::class)
-operator fun <T> ReceiveChannel<T>.plus(right: ReceiveChannel<T>) = GlobalScope.produce<T>(onCompletion = { cancel(); right.cancel() }) {
-    val left = this@plus
-    while(isActive){
-        val next = select<T> {
-            if(! left.isClosedForReceive) left.onReceive { it }
-            if(! right.isClosedForReceive) right.onReceive { it }
-        }
-        send(next)
-
-        if(left.isClosedForReceive && right.isClosedForReceive) break
-    }
-}
+//operator fun <T> ReceiveChannel<T>.plus(right: ReceiveChannel<T>) = GlobalScope.produce<T>(onCompletion = { cancel(); right.cancel() }) {
+//    val left = this@plus
+//    while(isActive){
+//        val next = select<T> {
+//            if(! left.isClosedForReceive) left.onReceive { it }
+//            if(! right.isClosedForReceive) right.onReceive { it }
+//        }
+//        send(next)
+//
+//        if(left.isClosedForReceive && right.isClosedForReceive) break
+//    }
+//}
 
 fun <T> List<List<T>>.asTransposedRegular(): List<List<T>> = object: AbstractList<List<T>>() {
 
@@ -179,7 +173,7 @@ private fun CoroutineScope.startAgentGroup(
     constraints: Collection<BabelExpression>,
     samplerSeed: Random,
     improverSeed: Random,
-    seeds: ImmutableList<InputVector>
+    seeds: PersistentList<InputVector>
 ): ConstraintAnalysis {
 
     val inputNames = inputs.map { it.name }
@@ -194,7 +188,7 @@ private fun CoroutineScope.startAgentGroup(
         return Unsatisfiable(smt.problem)
     }
 
-    val pts = produce<InputVector>(Dispatchers.Default) {
+    val pts = flow<InputVector> {
 
         val initialRoundTarget = SOLUTION_PAGE_SIZE
         val initialResults = fairSampler.makeNewPointGeneration(initialRoundTarget, seeds)
@@ -210,7 +204,7 @@ private fun CoroutineScope.startAgentGroup(
                     val nextGen = fairSampler.makeNewPointGeneration(SOLUTION_PAGE_SIZE, results + seeds)
                     results += nextGen
 
-                    nextGen.forEach { send(it) }
+                    nextGen.forEach { emit(it) }
                 }
             }
             else -> {
@@ -272,18 +266,20 @@ private fun CoroutineScope.startAgentGroup(
                     }
 
                     if (roundNo > WARMUP_ROUNDS) {
-                        newQualityResults.forEach{ send(it) }
+                        for (it in newQualityResults) {
+                            emit(it)
+                        }
                         publishedPoints += newQualityResults
                     } else trace { "dropped ${newQualityResults.size} pts on warmup round $roundNo" }
 
                     // we balance on performance, unless any pool has a variance significantly worse than the others,
                     // then we avoid that pool
 
-                    val speedSum = results.values.sumByDouble { (t, pts, _, _) -> 1.0 * pts.size / t }
+                    val speedSum = results.values.sumOf { (t, pts, _, _) -> 1.0 * pts.size / t }
 
                     targets = results.mapValues { (pool, result) ->
                         val speed = 1.0 * result.points.size / result.timeMillis
-                        fail;// ok, running with 'x1 < 0.0001^(x2+1)' scares me
+                        // ok, running with 'x1 < 0.0001^(x2+1)' scares me
                         // notice that the improver offers a much higher variance
                         // but we still pick the adaptive sampler, which doenst appear to be adapting very well.
                         // hmm.
@@ -294,7 +290,7 @@ private fun CoroutineScope.startAgentGroup(
                     }
 
                     val previousTargets = targets
-                    val varianceSum = results.values.sumByDouble { it.variance }
+                    val varianceSum = results.values.sumOf { it.variance }
 
                     val varianceAverage = varianceSum / results.values.size
 

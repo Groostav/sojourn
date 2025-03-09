@@ -17,7 +17,7 @@ class RandomSamplingPool private constructor(
 
     override val name = "${if(adaptive)"Adaptive-" else "Random-"}Sampling"
 
-    var bounds: ImmutableMap<String, Span> = immutableMapOf()
+    var bounds: PersistentMap<String, Span> = persistentMapOf()
         private set
 
     init {
@@ -37,8 +37,8 @@ class RandomSamplingPool private constructor(
         return start + (endInclusive - start) * chunk
     }
 
-    override fun makeNewPointGeneration(pointCount: Int, existingPoints: ImmutableList<InputVector>)
-            : ImmutableList<InputVector> {
+    override fun makeNewPointGeneration(pointCount: Int, existingPoints: PersistentList<InputVector>)
+            : PersistentList<InputVector> {
 
         if(adaptive && ! existingPoints.isEmpty()) {
             for (variable in inputVariables) {
@@ -81,7 +81,7 @@ class RandomSamplingPool private constructor(
 
         val pointCount = pointCount.coerceAtLeast(10) // always force an attempt at sampling
 
-        var results = immutableListOf<InputVector>()
+        var results = persistentListOf<InputVector>()
 
         for(point in 0 until (pointCount * OVER_SAMPLING_FACTOR)){
 

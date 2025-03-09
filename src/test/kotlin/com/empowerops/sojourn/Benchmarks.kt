@@ -5,9 +5,11 @@ import com.empowerops.babel.BabelCompiler
 import com.empowerops.babel.BabelExpression
 import com.empowerops.babel.CompilationFailure
 import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.PersistentList
 import kotlinx.collections.immutable.immutableListOf
+import kotlinx.collections.immutable.persistentListOf
 
-private val compiler = BabelCompiler()
+private val compiler = BabelCompiler
 
 val SanityCheck = ConstraintSet(
         name = "SanityCheck",
@@ -153,7 +155,7 @@ data class ConstraintSet(
         val centroid: InputVector,
         val dispersion: Double,
         val targetSampleSize: Int,
-        val seeds: ImmutableList<InputVector> = immutableListOf(),
+        val seeds: PersistentList<InputVector> = persistentListOf(),
         val fudgeFactor: Double = 0.10,
         val feasibleRegions: List<FeasibleRegion> = emptyList()
 ) {
@@ -181,5 +183,5 @@ data class ConstraintSet(
 
 private fun BabelCompilationResult.expressionOrThrow(): BabelExpression = when(this){
     is BabelExpression -> this
-    is CompilationFailure -> throw RuntimeException(problems.joinToString("\n") { it.sourcedDescription })
+    is CompilationFailure -> throw RuntimeException(problems.joinToString("\n") { it.problemValueDescription })
 } 

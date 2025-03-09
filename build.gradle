@@ -1,47 +1,39 @@
 plugins {
-    id 'org.jetbrains.kotlin.jvm' version '1.3.31'
-    id 'edu.sc.seis.launch4j' version '2.4.6'
+    id 'org.jetbrains.kotlin.jvm' version '2.1.10'
+    id 'edu.sc.seis.launch4j' version '3.0.6'
 }
 
 group 'groostav'
-version '0.2'
+version '0.3'
 
 def target_arch="x86"
+def kotlin_ver = "2.1.10"
+def kotlinx_coroutines_ver = "1.10.1"
 
 repositories {
     mavenCentral()
-    jcenter()
-//    bintray()
-    maven { url 'https://dl.bintray.com/kotlin/kotlinx/' }
 }
 
+
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
-    implementation "com.empowerops:babel:0.10"
-    implementation "org.antlr:antlr4-runtime:4.7"
-//    implementation "org.jetbrains.kotlin:kotlin-stdlib"
-//    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
-    implementation "org.jetbrains.kotlin:kotlin-reflect"
-    implementation "org.jetbrains.kotlinx:kotlinx-collections-immutable:0.1"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.2.1"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.2.1"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_ver"
+    implementation "org.jetbrains.kotlin:kotlin-reflect:$kotlin_ver"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_ver"
+
+    implementation "org.antlr:antlr4-runtime:4.13.2"
+    implementation "org.jetbrains.kotlinx:kotlinx-collections-immutable:0.3.8"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinx_coroutines_ver"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:$kotlinx_coroutines_ver"
 
     //we put dll's on the path so launch4j can find them
     implementation files('deps/z3-4.8.5-merged/com.microsoft.z3.jar')
     implementation fileTree(dir: "deps/z3-4.8.5-merged/$target_arch-win/", include: ['*.dll'])
 
+    implementation fileTree(dir: 'deps/babel/', include: ['*.jar'])
+
     testImplementation group: 'org.testng', name: 'testng', version: '6.14.3'
     testImplementation "org.assertj:assertj-core:3.8.0"
 }
-
-
-compileKotlin {
-    kotlinOptions.jvmTarget = "1.8"
-}
-compileTestKotlin {
-    kotlinOptions.jvmTarget = "1.8"
-}
-
 
 test {
     useTestNG()
@@ -51,7 +43,7 @@ test {
     // so this breaks things.
     def path = System.env.PATH ?: System.env.Path ?: System.env.LD_LIBRARY_PATH
     if(path == null) throw Exception("cant find appropriate java.library.path default")
-    jvmArgs "-Djava.library.path=$path;deps/z3-4.8.5-merged/${System.properties['os.arch']}-win/bin"
+    jvmArgs += "-Djava.library.path=$path;deps/z3-4.8.5-merged/${System.properties['os.arch']}-win/bin"
 }
 
 launch4j {
@@ -59,4 +51,10 @@ launch4j {
     headerType = 'console'
 
     jvmOptions.add("-Djava.library.path=TODO")
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
 }

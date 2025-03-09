@@ -9,7 +9,7 @@ import org.testng.annotations.Test
 
 class Z3SolvingPoolFixture {
 
-    val compiler = BabelCompiler()
+    val compiler = BabelCompiler
 
     @Test
     fun `simple arithmatic`() = runTest(

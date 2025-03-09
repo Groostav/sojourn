@@ -4,6 +4,7 @@ import com.empowerops.babel.BabelCompiler
 import com.empowerops.babel.BabelExpression
 import com.empowerops.babel.CompilationFailure
 import kotlinx.coroutines.channels.take
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -26,7 +27,7 @@ fun main(args: Array<String>) = runBlocking<Unit> {
 
     val exprs = exprArgs.joinToString(" ").split("&&").map { it.trim() }
 
-    val compiler = BabelCompiler()
+    val compiler = BabelCompiler
 
     val compiled = exprs.map { compiler.compile(it) }
     val constraints = compiled.filterIsInstance<BabelExpression>()
@@ -55,7 +56,7 @@ fun main(args: Array<String>) = runBlocking<Unit> {
             is Unsatisfiable -> "UNSATISFIABLE: ${sampleStream.problemConstraint?.expressionLiteral}"
         })
         if(sampleStream is Worthwhile){
-            for (it in sampleStream.results.take(targetPointCount)) {
+            sampleStream.take(targetPointCount).collect {
                 println("$it (PASS=${constraints.passFor(it)})")
             }
         }

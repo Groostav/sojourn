@@ -217,7 +217,7 @@ data class ExcelResults(var results: List<ExcelResult> = emptyList()) {
 
 val ConstraintSolvingPool.name: String get() = javaClass.simpleName
 
-fun expand(inputs: List<String>, values: List<Double>): ImmutableList<InputVector> {
+fun expand(inputs: List<String>, values: List<Double>): PersistentList<InputVector> {
 
     var results = immutableListOf<InputVector>()
 

@@ -1,8 +1,5 @@
 package com.empowerops.sojourn
 
-import kotlinx.collections.immutable.ImmutableMap
-import kotlinx.collections.immutable.immutableHashMapOf
-import kotlinx.collections.immutable.toImmutableHashMap
 import java.util.AbstractMap
 
 //typealias InputVector = ImmutableMap<String, Double>
@@ -106,7 +103,7 @@ class InputVector : Map<String, Double> {
     override val size: Int get() = keys.size
     override val entries: Set<Map.Entry<String, Double>> get() = _entries ?: EntrySet(this).also { _entries = it }
 
-    override fun containsValue(value: Double) = value in _values
+    override fun containsValue(value: Double) = _values.any { it == value }
     override fun containsKey(key: String): Boolean = key in keys
     override fun get(key: String): Double? = _keys.indexOf(key).let { if(it == -1) null else _values[it] }
     override fun isEmpty() = size == 0

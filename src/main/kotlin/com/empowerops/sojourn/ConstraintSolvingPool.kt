@@ -2,6 +2,7 @@ package com.empowerops.sojourn
 
 import com.empowerops.babel.BabelExpression
 import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.PersistentList
 
 //typealias InputVector = ImmutableMap<String, Double>
 
@@ -21,7 +22,7 @@ interface ConstraintSolvingPool {
     // 2. SMT solver hit something it couldnt transcode.
     //
     // you must filter this list on the callers side!
-    fun makeNewPointGeneration(pointCount: Int, existingPoints: ImmutableList<InputVector>): ImmutableList<InputVector>
+    fun makeNewPointGeneration(pointCount: Int, existingPoints: PersistentList<InputVector>): PersistentList<InputVector>
 }
 
 

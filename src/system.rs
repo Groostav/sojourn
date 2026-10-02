@@ -246,10 +246,44 @@ impl ConstraintSystem {
     /// [`SystemError`] for the first constraint that does not fit. One rather
     /// than all: an unbound name is nearly always a typo, and a list of
     /// consequences is less use than the cause.
+    ///
+    /// # Panics
+    /// If a variable is named with anything but a legal Babel variable name
+    /// ([`is_legal_variable_name`](crate::is_legal_variable_name)), repeats an
+    /// earlier variable's name, or ranges over bounds that are not finite with
+    /// the lower not above the upper. Equal bounds are fine: they fix the
+    /// variable. These are the caller's to check, not verdicts about the
+    /// system, and without them the answers are wrong rather than refused:
+    /// inverted bounds read as proved infeasible, blaming a constraint.
     pub fn new<S: Into<String>>(
         variables: Vec<InputVariable>,
         constraints: impl IntoIterator<Item = S>,
     ) -> Result<Self, SystemError> {
+        for (index, variable) in variables.iter().enumerate() {
+            let InputVariable {
+                name,
+                lower_bound,
+                upper_bound,
+            } = variable;
+            assert!(
+                crate::is_legal_variable_name(name),
+                "variable {index} is named {name:?}, which is not a legal variable name"
+            );
+            assert!(
+                variables[..index]
+                    .iter()
+                    .all(|earlier| earlier.name != *name),
+                "variable {index} repeats the name {name:?}"
+            );
+            assert!(
+                lower_bound.is_finite() && upper_bound.is_finite(),
+                "variable {name:?} ranges over [{lower_bound}, {upper_bound}]; bounds must be finite"
+            );
+            assert!(
+                lower_bound <= upper_bound,
+                "variable {name:?} has lower bound {lower_bound} above its upper bound {upper_bound}"
+            );
+        }
         let schema = Schema::new(variables.iter().map(|input| input.name.clone()));
 
         let mut resolved = Vec::new();

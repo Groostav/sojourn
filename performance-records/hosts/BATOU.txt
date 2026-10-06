@@ -5,5 +5,5 @@ cpu:      AMD Ryzen 7 7800X3D 8-Core Processor
 cores:    8 cores / 16 threads, 4201 MHz
 ram:      64 GB
 simd:     pulp::x86::v3::V3, 4 f64 lanes
-gpu:      AMD Radeon RX 7800 XT (Vulkan)
+gpu:      not built
 rustc:    1.97.0 (2d8144b78 2026-07-07)

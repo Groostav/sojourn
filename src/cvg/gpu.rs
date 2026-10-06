@@ -6,7 +6,7 @@
 
 use faer::MatRef;
 
-use crate::{ConstraintSystem, Point};
+use crate::{ConstraintSystem, GpuTarget, Point};
 
 /// A compiled sieve for one system, or `None` without an adapter.
 pub struct Sieve {
@@ -15,13 +15,13 @@ pub struct Sieve {
 
 #[must_use]
 pub fn sieve_for(system: &ConstraintSystem) -> Option<Sieve> {
-    super::sieve::Sieve::new(system).map(|inner| Sieve { inner })
+    super::sieve::Sieve::new(system, &GpuTarget::Default).map(|inner| Sieve { inner })
 }
 
 /// The adapter's name and backend, or `None` without one.
 #[must_use]
 pub fn adapter_name() -> Option<String> {
-    super::sieve::adapter_name()
+    super::sieve::adapter_name(&GpuTarget::Default)
 }
 
 impl Sieve {

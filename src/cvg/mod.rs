@@ -190,9 +190,9 @@ impl Ladder {
                         stream,
                         budgets.proposals,
                         budgets.threads,
+                        budgets.gpu.clone(),
+                        budgets.gpu_proposals,
                     );
-                    #[cfg(feature = "gpu")]
-                    let sampler = sampler.with_gpu(budgets.gpu.then_some(budgets.gpu_proposals));
                     ladder.sampler = Some(sampler);
                 }
                 Strategy::HitAndRun => ladder.walker = Some(HitAndRunWalker::new(stream)),
@@ -517,6 +517,8 @@ pub(crate) fn design(
         Xoshiro256PlusPlus::from_rng(&mut rng),
         0,
         1,
+        crate::solve::GpuTarget::Off,
+        0,
     );
     let mut walker = walker
         .clone()
@@ -726,7 +728,7 @@ mod tests {
         let verdict = ConstraintSolver::new()
             .with_prune_budget(64)
             .with_proposal_budget(0)
-            .with_gpu(false)
+            .with_gpu_proposal_budget(0)
             .solve(&hard, &mut Xoshiro256PlusPlus::seed_from_u64(SEED));
         let took = started.elapsed();
         assert!(
@@ -744,7 +746,7 @@ mod tests {
         let verdict = ConstraintSolver::new()
             .with_strategies(vec![Strategy::BruteSquad, Strategy::HitAndRun])
             .with_proposal_budget(0)
-            .with_gpu(false)
+            .with_gpu_proposal_budget(0)
             .solve(
                 &one_in_a_million(),
                 &mut Xoshiro256PlusPlus::seed_from_u64(SEED),

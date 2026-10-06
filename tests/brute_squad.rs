@@ -334,7 +334,6 @@ fn without_a_prover_an_empty_region_is_not_found_rather_than_proved() {
     let constraints = ["x1 > 2.0".to_owned()];
     let verdict = ConstraintSolver::new()
         .with_proposal_budget(common::PROPOSAL_BUDGET)
-        .with_gpu(false)
         .with_strategies(SAMPLING_ONLY.to_vec())
         .solve(
             &system(&constraints),

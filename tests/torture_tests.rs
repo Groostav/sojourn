@@ -70,9 +70,7 @@ fn in_box(system: &ConstraintSystem, point: &[f64]) -> bool {
 /// The solver every fixture here starts from: the test-sized budget, the CPU
 /// alone so the verdict is a function of the generator's state.
 fn solver() -> ConstraintSolver {
-    ConstraintSolver::new()
-        .with_proposal_budget(common::PROPOSAL_BUDGET)
-        .with_gpu(false)
+    ConstraintSolver::new().with_proposal_budget(common::PROPOSAL_BUDGET)
 }
 
 /// The generator every solve here draws from.

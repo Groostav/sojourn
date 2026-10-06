@@ -44,7 +44,7 @@
 //! is remembered, so a machine without one is asked once per process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use askama::Template;
@@ -52,6 +52,7 @@ use faer::MatRef;
 use wgpu::util::DeviceExt;
 
 use crate::eval::wgsl::{Function, Prelude};
+use crate::solve::GpuTarget;
 use crate::{ConstraintSystem, GPU_VARIABLE, Point};
 
 /// Candidates per dispatch. Four million: sixteen thousand workgroups of
@@ -93,44 +94,67 @@ static GPU: Mutex<Weak<Gpu>> = Mutex::new(Weak::new());
 static NO_ADAPTER: AtomicBool = AtomicBool::new(false);
 
 /// The current connection, shared with whoever else holds it, or a fresh one.
-fn acquire() -> Option<Arc<Gpu>> {
-    if NO_ADAPTER.load(Ordering::Relaxed) {
+fn acquire(state: &GpuTarget) -> Option<Arc<Gpu>> {
+    if state == &GpuTarget::Off {
         return None;
     }
-    let mut slot = GPU
+    if NO_ADAPTER.load(Ordering::Relaxed) && matches!(state, GpuTarget::Default) {
+        return None;
+    }
+
+    let mut slot: MutexGuard<Weak<Gpu>> = GPU
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     if let Some(live) = slot.upgrade() {
-        return Some(live);
+        let matches_live = match state {
+            GpuTarget::Off => false,
+            GpuTarget::Default => true,
+            GpuTarget::Named(choice) => matches(
+                choice,
+                0,
+                &live.info.name,
+                &format!("{:?}", live.info.backend),
+            ),
+        };
+        if matches_live {
+            return Some(live);
+        }
     }
-    match connect() {
+    match connect(state) {
         Some(gpu) => {
             let gpu = Arc::new(gpu);
             *slot = Arc::downgrade(&gpu);
             Some(gpu)
         }
         None => {
-            NO_ADAPTER.store(true, Ordering::Relaxed);
+            if matches!(state, GpuTarget::Default) {
+                NO_ADAPTER.store(true, Ordering::Relaxed);
+            }
             None
         }
     }
 }
 
-fn connect() -> Option<Gpu> {
+fn connect(state: &GpuTarget) -> Option<Gpu> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    let adapter = match std::env::var(GPU_VARIABLE) {
-        Ok(choice) => choose(&instance, &choice)?,
-        Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-            ..Default::default()
-        }))
-        .map_err(|error| tracing::info!(%error, "no GPU adapter; brute force stays on the CPU"))
-        .ok()?,
+    let adapter = match state {
+        GpuTarget::Off => return None,
+        GpuTarget::Named(choice) => choose(&instance, choice)?,
+        GpuTarget::Default => match std::env::var(GPU_VARIABLE) {
+            Ok(choice) => choose(&instance, &choice)?,
+            Err(_) => pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                ..Default::default()
+            }))
+            .map_err(|error| tracing::info!(%error, "no GPU adapter; brute force stays on the CPU"))
+            .ok()?,
+        },
     };
     let info = adapter.get_info();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -205,8 +229,8 @@ fn matches(choice: &str, index: usize, name: &str, backend: &str) -> bool {
 
 /// The adapter's name, for the ledgers. `None` without one. Connects if
 /// nothing else is holding the device, and lets go again on return.
-pub(crate) fn adapter_name() -> Option<String> {
-    acquire().map(|gpu| format!("{} ({:?})", gpu.info.name, gpu.info.backend))
+pub(crate) fn adapter_name(state: &GpuTarget) -> Option<String> {
+    acquire(state).map(|gpu| format!("{} ({:?})", gpu.info.name, gpu.info.backend))
 }
 
 /// The buffers the shader binds, by slot.
@@ -342,8 +366,8 @@ impl Sieve {
     /// Compiles the problem's constraints into one shader. `None` when there
     /// is no adapter, or the shader does not build — the caller then takes
     /// the CPU path, which is never wrong, only slower.
-    pub(crate) fn new(problem: &ConstraintSystem) -> Option<Self> {
-        let gpu = acquire()?;
+    pub(crate) fn new(problem: &ConstraintSystem, state: &GpuTarget) -> Option<Self> {
+        let gpu = acquire(state)?;
         let variables = problem.variables().len();
         if variables == 0 {
             return None;
@@ -691,7 +715,7 @@ mod tests {
     use super::Sieve;
     use crate::cvg::sampling::fill_box;
     use crate::system::tests::system;
-    use crate::{InputVariable, Point};
+    use crate::{GpuTarget, InputVariable, Point};
 
     /// The table is in slot order and every name is distinct, which is what
     /// lets `@binding(index)` in the shader and the layout agree by
@@ -727,7 +751,7 @@ mod tests {
 
     macro_rules! sieve_or_skip {
         ($problem:expr) => {
-            match Sieve::new(&$problem) {
+            match Sieve::new(&$problem, &GpuTarget::Default) {
                 Some(sieve) => sieve,
                 None => {
                     eprintln!("no GPU adapter (or the shader did not build); test skipped");

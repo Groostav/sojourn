@@ -29,6 +29,7 @@ use super::classify;
 use super::progress::Trial;
 #[cfg(feature = "gpu")]
 use super::sieve::{GPU_BATCH, Sieve};
+use crate::solve::GpuTarget;
 use crate::{ConstraintSystem, InputVariable, Point};
 
 /// How many candidates to propose per point asked for.
@@ -128,12 +129,18 @@ pub(crate) struct RandomSampler {
     /// Threads the brute-force search fans out over. Never changes what is
     /// found, only how soon.
     threads: usize,
-    /// The budget brute force may spend on a GPU, when the caller allows one
-    /// and an adapter turns out to exist. `None` keeps brute force on the CPU
-    /// threads. The device itself is acquired when brute force starts and
-    /// released when it returns; see [`Sieve`] for what running there trades.
-    #[cfg(feature = "gpu")]
-    gpu_budget: Option<u64>,
+    /// The GPU device configuration.
+    #[cfg_attr(
+        not(feature = "gpu"),
+        allow(dead_code, reason = "knob exists without the feature")
+    )]
+    gpu: GpuTarget,
+    /// The budget brute force may spend on a GPU.
+    #[cfg_attr(
+        not(feature = "gpu"),
+        allow(dead_code, reason = "knob exists without the feature")
+    )]
+    gpu_proposals: u64,
 }
 
 impl RandomSampler {
@@ -142,6 +149,8 @@ impl RandomSampler {
         rng: Xoshiro256PlusPlus,
         budget: u64,
         threads: usize,
+        gpu: GpuTarget,
+        gpu_proposals: u64,
     ) -> Self {
         let bounds = variables
             .iter()
@@ -152,16 +161,9 @@ impl RandomSampler {
             bounds,
             budget,
             threads: threads.max(1),
-            #[cfg(feature = "gpu")]
-            gpu_budget: None,
+            gpu,
+            gpu_proposals,
         }
-    }
-
-    /// Lets brute force run on a GPU, with this budget, if there is one.
-    #[cfg(feature = "gpu")]
-    pub(crate) fn with_gpu(mut self, budget: Option<u64>) -> Self {
-        self.gpu_budget = budget;
-        self
     }
 
     /// One brute-force batch from the sampler's own stream, judged: the probe
@@ -224,18 +226,19 @@ impl RandomSampler {
         let base = self.rng.next_u64();
 
         #[cfg(feature = "gpu")]
-        if let Some(budget) = self.gpu_budget
-            && let Some(sieve) = Sieve::new(problem)
+        if self.gpu != GpuTarget::Off
+            && self.gpu_proposals > 0
+            && let Some(sieve) = Sieve::new(problem, &self.gpu)
         {
             // The sieve — and with it the device, if nobody else holds it —
             // is dropped at the end of this block, whichever way it went.
-            if let Some(trial) = brute_force_on_gpu(&sieve, problem, base, budget) {
+            if let Some(trial) = brute_force_on_gpu(&sieve, problem, base, self.gpu_proposals) {
                 return trial;
             }
             // The device failed or timed out mid-search. Finish on the CPU,
             // from the same base, and do not ask the device again.
             tracing::warn!("the GPU sieve stopped answering; finishing brute force on the CPU");
-            self.gpu_budget = None;
+            self.gpu = GpuTarget::Off;
         }
 
         self.brute_force_on_cpu(problem, base)
@@ -455,8 +458,8 @@ mod brute_force_tests {
     use rand::rngs::Xoshiro256PlusPlus;
 
     use super::{RandomSampler, Trial};
-    use crate::InputVariable;
     use crate::system::tests::system;
+    use crate::{GpuTarget, InputVariable};
 
     const SEED: u64 = 0xB2_07_E5_90_AD;
 
@@ -468,6 +471,8 @@ mod brute_force_tests {
             Xoshiro256PlusPlus::seed_from_u64(SEED),
             budget,
             threads,
+            GpuTarget::Off,
+            0,
         );
         let columns = sampler.batch_columns();
         let trial = sampler.brute_force(&problem);

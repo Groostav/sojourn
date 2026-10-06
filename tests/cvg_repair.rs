@@ -44,7 +44,6 @@ fn system(variables: Vec<InputVariable>, constraints: &[&str]) -> anyhow::Result
 fn region(system: &ConstraintSystem) -> anyhow::Result<FeasibleRegion> {
     ConstraintSolver::new()
         .with_proposal_budget(common::PROPOSAL_BUDGET)
-        .with_gpu(false)
         .solve(system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED))
         .context("the fixture should be satisfiable")
 }
@@ -366,7 +365,6 @@ fn repair_holds_its_contract_over_a_polytope() -> anyhow::Result<()> {
 
     let region = ConstraintSolver::new()
         .with_proposal_budget(common::PROPOSAL_BUDGET)
-        .with_gpu(false)
         .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED))?;
     let census = region.sample(
         Mat::zeros(0, 0).as_ref(),

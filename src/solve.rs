@@ -229,6 +229,34 @@ pub const DEFAULT_GPU_PROPOSAL_BUDGET: u64 = 30_000_000_000;
 /// the variable is set. Only read by builds with the `gpu` feature.
 pub const GPU_VARIABLE: &str = "SOJOURN_GPU";
 
+/// The GPU device configuration for brute-force candidate sampling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuTarget {
+    /// Disables GPU execution; brute force runs solely on the CPU.
+    Off,
+    /// Uses the default GPU adapter, preferring high performance (or using [`GPU_VARIABLE`] if set).
+    Default,
+    /// Binds to a specific adapter matching the given name, index, or backend.
+    Named(String),
+}
+
+#[expect(
+    clippy::derivable_impls,
+    reason = "the default variant depends on whether the `gpu` feature is enabled"
+)]
+impl Default for GpuTarget {
+    fn default() -> Self {
+        #[cfg(feature = "gpu")]
+        {
+            Self::Default
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Self::Off
+        }
+    }
+}
+
 /// Everything a solve needs beyond the problem and a generator.
 ///
 /// Any points the caller already believes in, which strategies to use, and
@@ -270,7 +298,7 @@ pub struct ConstraintSolver {
 /// Every one a count rather than a clock, so that the same generator state
 /// reaches the same verdict on every machine; the thread count changes only
 /// how soon.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Budgets {
     /// See [`ConstraintSolver::with_proposal_budget`].
     pub(crate) proposals: u64,
@@ -278,13 +306,12 @@ pub(crate) struct Budgets {
     pub(crate) threads: usize,
     /// See [`ConstraintSolver::with_prune_budget`].
     pub(crate) prune: u32,
-    /// See [`ConstraintSolver::with_gpu`]. Read only when the `gpu` feature
-    /// is on; kept in the struct either way so the builder is one API.
+    /// See [`ConstraintSolver::with_gpu`].
     #[cfg_attr(
         not(feature = "gpu"),
         allow(dead_code, reason = "the knob exists without the feature")
     )]
-    pub(crate) gpu: bool,
+    pub(crate) gpu: GpuTarget,
     /// See [`ConstraintSolver::with_gpu_proposal_budget`].
     #[cfg_attr(
         not(feature = "gpu"),
@@ -299,7 +326,7 @@ impl Default for Budgets {
             proposals: DEFAULT_PROPOSAL_BUDGET,
             threads: std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
             prune: DEFAULT_PRUNE_BUDGET,
-            gpu: true,
+            gpu: GpuTarget::default(),
             gpu_proposals: DEFAULT_GPU_PROPOSAL_BUDGET,
         }
     }
@@ -358,9 +385,7 @@ impl ConstraintSolver {
     /// same seed finds the same point on every machine.
     ///
     /// The GPU, when brute force runs there, has its own budget:
-    /// [`with_gpu_proposal_budget`](Self::with_gpu_proposal_budget). To skip
-    /// brute force altogether, zero both, or zero this and
-    /// [`with_gpu(false)`](Self::with_gpu).
+    /// [`with_gpu_proposal_budget`](Self::with_gpu_proposal_budget).
     #[must_use]
     pub const fn with_proposal_budget(mut self, proposals: u64) -> Self {
         self.budgets.proposals = proposals;
@@ -381,22 +406,17 @@ impl ConstraintSolver {
         self
     }
 
-    /// Whether brute force may run on a GPU.
+    /// Whether and which GPU brute force may run on.
     ///
-    /// On by default, and used only when the crate was built with the opt-in
-    /// `gpu` feature and an adapter is present; otherwise brute force runs on
-    /// the CPU threads and this changes nothing. The device is acquired when
-    /// brute force starts and released when it returns. The GPU
-    /// proposes and sieves candidates in `f32`, and the CPU re-judges every
-    /// survivor exactly, so what it delivers is as feasible as anything else.
-    /// What it trades is reproducibility *across machines*: the seed brute
-    /// force lands is a function of the seed, the budget, and the device,
-    /// where the CPU path is a function of the first two alone. Turn it off
-    /// for a run that must reproduce anywhere. Which adapter is used, when
-    /// there are several, is [`GPU_VARIABLE`]'s business.
+    /// Available when the crate was built with the opt-in `gpu` feature.
+    /// [`GpuTarget::Default`] uses the default high-performance adapter (or
+    /// the adapter specified in [`GPU_VARIABLE`]); [`GpuTarget::Named`] selects
+    /// an adapter by name, index, or backend; [`GpuTarget::Off`] keeps brute force
+    /// on the CPU.
+    #[cfg(feature = "gpu")]
     #[must_use]
-    pub const fn with_gpu(mut self, enabled: bool) -> Self {
-        self.budgets.gpu = enabled;
+    pub fn with_gpu(mut self, gpu: GpuTarget) -> Self {
+        self.budgets.gpu = gpu;
         self
     }
 
@@ -465,12 +485,9 @@ impl ConstraintSolver {
         )
         .entered();
         let stream = Xoshiro256PlusPlus::from_rng(rng);
-        let mut ladder = Ladder::new(system, stream, &self.strategies, self.budgets);
+        let mut ladder = Ladder::new(system, stream, &self.strategies, self.budgets.clone());
         let (verdict, progress) = cvg::open(system, &mut ladder, self.known_feasible.clone());
 
-        let name_all = |indices: Vec<usize>| -> Vec<ConstraintRef> {
-            indices.into_iter().map(|i| system.named(i)).collect()
-        };
         match verdict {
             // The region answers for the system after the search, which is
             // where repair lives; a system is tapes and two small graphs, so
@@ -506,10 +523,10 @@ impl ConstraintSolver {
                 })
             }
             Opening::Impossible { blamed } => Err(Infeasibility::Proved {
-                blamed: name_all(blamed),
+                blamed: blamed.into_iter().map(|i| system.named(i)).collect(),
             }),
             Opening::Unproven { unexpressed } => Err(Infeasibility::NotFound {
-                unexpressed: name_all(unexpressed),
+                unexpressed: unexpressed.into_iter().map(|i| system.named(i)).collect(),
             }),
         }
     }

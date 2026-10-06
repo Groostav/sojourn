@@ -148,7 +148,7 @@ pub(crate) struct Ladder {
     /// The stream the region keeps for what it does after the opening: the
     /// reference point's extra starts and every repair's sampling box. Drawn
     /// last, for the same reason.
-    kept: Xoshiro256PlusPlus,
+    repair_stream: Xoshiro256PlusPlus,
 }
 
 impl std::fmt::Debug for Ladder {
@@ -175,7 +175,7 @@ impl Ladder {
             local: None,
             prune: None,
             burn_in: Xoshiro256PlusPlus::seed_from_u64(0),
-            kept: Xoshiro256PlusPlus::seed_from_u64(0),
+            repair_stream: Xoshiro256PlusPlus::seed_from_u64(0),
         };
         // Each strategy gets its own stream, derived from the one passed in and
         // drawn in list order, so that adding or removing a strategy does not
@@ -200,7 +200,7 @@ impl Ladder {
             }
         }
         ladder.burn_in = Xoshiro256PlusPlus::from_rng(&mut rng);
-        ladder.kept = Xoshiro256PlusPlus::from_rng(&mut rng);
+        ladder.repair_stream = Xoshiro256PlusPlus::from_rng(&mut rng);
         ladder
     }
 
@@ -208,7 +208,7 @@ impl Ladder {
     /// walker it will burn in, and the stream its reference and its repairs
     /// draw from.
     pub(crate) fn into_kept(self) -> (HitAndRunWalker, Xoshiro256PlusPlus) {
-        (HitAndRunWalker::new(self.burn_in), self.kept)
+        (HitAndRunWalker::new(self.burn_in), self.repair_stream)
     }
 
     /// Whether the walker will do most of the delivering, judged on the

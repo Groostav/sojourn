@@ -229,10 +229,16 @@ pub(crate) fn contract(
         for (symbol, row) in rows.iter().enumerate() {
             let wanted = u32::try_from(symbol).expect("fewer than four billion symbols");
             let before = globals[symbol];
-            let after = before.intersect(problem.constraints[id.index()].intervals.narrow(
-                &globals,
-                GlobalId::from_index(wanted),
-                &mut frames,
+            // Onto the coordinate's levels, if it has any: an interval between
+            // two levels is empty here, which is the proof the interval alone
+            // could not give.
+            let support = &problem.supports[row.index()];
+            let after = support.round_inward(before.intersect(
+                problem.constraints[id.index()].intervals.narrow(
+                    &globals,
+                    GlobalId::from_index(wanted),
+                    &mut frames,
+                ),
             ));
             if after.is_empty() {
                 contributed[id.index()] = true;
@@ -241,9 +247,24 @@ pub(crate) fn contract(
                 };
             }
             // Less than `PROGRESS` of the declared width is no change at all:
-            // not applied, not recorded, not propagated.
-            let shrunk = before.width() - after.width();
-            if shrunk <= PROGRESS * declared[row.index()] {
+            // not applied, not recorded, not propagated. A discrete coordinate
+            // has moved when it holds a level fewer, however small a share of
+            // its width that is — a crawl a level a visit on a long lattice is
+            // what the visit cap is for.
+            let progressed = match support {
+                VariableSupport::Continuous { .. } => {
+                    before.width() - after.width() > PROGRESS * declared[row.index()]
+                }
+                VariableSupport::Discrete(levels) => {
+                    let held = |interval: Interval| {
+                        levels
+                            .within(interval)
+                            .map_or(0, |range| range.end() - range.start() + 1)
+                    };
+                    held(after) < held(before)
+                }
+            };
+            if !progressed {
                 continue;
             }
             globals[symbol] = after;
@@ -295,6 +316,16 @@ pub(crate) enum Pruned {
 /// coordinates centred in their bands, see [`classify::centre`] — is judged feasible is
 /// settled and not split: it is a piece in hand. A box with no coordinate
 /// wider than [`RESOLUTION`] is a leaf as it stands.
+///
+/// A discrete coordinate splits between two of its levels, so neither half
+/// holds the other's, and is wide while it holds two levels or more, by its
+/// share of its levels rather than of its width. A box narrowed to a single
+/// value in every coordinate — one level, or an interval of no width — is a
+/// point, and judging it decides it: feasible, it is settled; not, the box
+/// is empty, blamed on what the point violates and on what narrowed the box
+/// to it. That is what makes enumeration a proof — a small lattice split
+/// down to its points, every one judged — and it holds for a continuous
+/// coordinate of no width as well, which is a point by the same argument.
 pub(crate) fn bisect(
     problem: &ConstraintSystem,
     root: Node,
@@ -312,12 +343,37 @@ pub(crate) fn bisect(
         node.bounds
             .iter()
             .zip(&declared)
+            .zip(&problem.supports)
             .enumerate()
-            .filter(|(_, (_, width))| **width > 0.0)
-            .map(|(row, (interval, width))| (row, interval.width() / width))
-            .filter(|(_, relative)| *relative >= RESOLUTION)
+            .filter_map(|(row, ((interval, width), support))| match support {
+                VariableSupport::Continuous { .. } => {
+                    let relative = interval.width() / width;
+                    (*width > 0.0 && relative >= RESOLUTION).then_some((row, relative))
+                }
+                VariableSupport::Discrete(levels) => {
+                    let held = levels
+                        .within(*interval)
+                        .map_or(0, |range| range.end() - range.start() + 1);
+                    // Two levels held means at least two declared, so the
+                    // division is by one or more.
+                    (held >= 2).then(|| (row, (held - 1) as f64 / (levels.count() - 1) as f64))
+                }
+            })
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(row, _)| row)
+    };
+    // Whether every coordinate of `node` holds one value, so its centre is
+    // the whole box.
+    let point = |node: &Node| -> bool {
+        node.bounds
+            .iter()
+            .zip(&problem.supports)
+            .all(|(interval, support)| match support {
+                VariableSupport::Continuous { .. } => interval.lo() == interval.hi(),
+                VariableSupport::Discrete(levels) => levels
+                    .within(*interval)
+                    .is_some_and(|range| range.start() == range.end()),
+            })
     };
     let settle = |node: Node| -> Leaf {
         // The centre, with every driven coordinate put at the centre of its
@@ -342,7 +398,39 @@ pub(crate) fn bisect(
             continue;
         }
         let Some(row) = widest(&leaf.node) else {
-            leaves.push(leaf);
+            if !point(&leaf.node) {
+                leaves.push(leaf);
+                continue;
+            }
+            // Judged as it stands: `classify::centre` moves a driven
+            // coordinate within its slice of the declared box, which could
+            // leave a box that is a single point.
+            let only = leaf.node.centre(problem);
+            if problem.is_feasible(&only, 0.0) {
+                leaves.push(Leaf {
+                    node: leaf.node,
+                    settled: Some(only),
+                });
+                continue;
+            }
+            let mut violated = 0;
+            for (index, constraint) in problem.constraints.iter().enumerate() {
+                let id = ConstraintId(index);
+                let rows = problem.incidence.rows_of(id);
+                if constraint.holds(&only, rows, &problem.supports, 0.0, &mut []) {
+                    continue;
+                }
+                violated += 1;
+                for row in rows {
+                    for index in leaf.node.blame(problem, id, *row) {
+                        blamed[index] = true;
+                    }
+                }
+            }
+            assert!(
+                violated > 0,
+                "a point inside its box that fails the oracle fails a constraint: {only:?}"
+            );
             continue;
         };
         if remaining < 2 {
@@ -353,11 +441,19 @@ pub(crate) fn bisect(
         remaining -= 2;
 
         let whole = leaf.node.bounds[row];
-        let middle = whole.lo() + whole.width() / 2.0;
-        for half in [
-            Interval::new(whole.lo(), middle),
-            Interval::new(middle, whole.hi()),
-        ] {
+        let halves = match &problem.supports[row] {
+            VariableSupport::Continuous { .. } => {
+                let middle = whole.lo() + whole.width() / 2.0;
+                (
+                    Interval::new(whole.lo(), middle),
+                    Interval::new(middle, whole.hi()),
+                )
+            }
+            VariableSupport::Discrete(levels) => levels
+                .split(whole)
+                .expect("`widest` chose it for holding two levels"),
+        };
+        for half in [halves.0, halves.1] {
             let mut child = leaf.node.clone();
             child.bounds[row] = half;
             match contract(problem, child, contributed) {
@@ -726,5 +822,76 @@ mod tests {
             leaves.into_iter().map(|leaf| leaf.node.bounds).collect()
         };
         assert_eq!(bounds(pruned(&system, 32)), bounds(pruned(&system, 32)));
+    }
+
+    /// `(2.5, 2.9)` holds no integer: rounding the narrowed interval onto
+    /// the levels empties it, and the proof blames both bounds.
+    #[test]
+    fn an_interval_between_two_levels_is_empty() {
+        // setup
+        let system = system(
+            vec![InputVariable::new_discrete("n", 0.0, 1.0, 10.0)],
+            &["n > 2.5", "n < 2.9"],
+        );
+
+        // act
+        let (result, _) = contracted(&system);
+
+        // assert
+        let Contracted::Empty { blamed } = result else {
+            panic!("expected empty, got {result:?}");
+        };
+        assert_eq!(blamed, vec![0, 1]);
+    }
+
+    /// `%` narrows nothing, so no contraction sees that an even level is
+    /// never odd; splitting the lattice down to its eleven points and judging
+    /// each one does, inside the budget — and every point that dies blames
+    /// the constraint it fails.
+    #[test]
+    fn a_lattice_split_to_its_points_is_proved_empty() {
+        // setup
+        let system = system(
+            vec![InputVariable::new_discrete("n", 0.0, 2.0, 20.0)],
+            &["n % 2 == 1 +/- 0.1"],
+        );
+
+        // act
+        let result = pruned(&system, 64);
+
+        // assert
+        let Pruned::Empty { blamed } = result else {
+            panic!("expected empty, got {result:?}");
+        };
+        assert_eq!(blamed, vec![0]);
+    }
+
+    /// A discrete coordinate splits between levels, never through one, so
+    /// the pieces of a region one level apart are each a leaf of their own.
+    #[test]
+    fn each_level_of_a_region_in_pieces_settles_its_own_leaf() {
+        // setup
+        let system = system(
+            vec![
+                InputVariable::new("ratio", crate::Domain::Levels(vec![1.0, 2.0, 4.0])),
+                InputVariable::new_continuous("speed", 0.0, 100.0),
+            ],
+            &["speed / ratio >= 20", "speed / ratio <= 20.01"],
+        );
+
+        // act
+        let result = pruned(&system, 64);
+
+        // assert
+        let Pruned::Live { leaves, .. } = result else {
+            panic!("expected leaves, got {result:?}");
+        };
+        let mut ratios: Vec<f64> = leaves
+            .iter()
+            .filter_map(|leaf| leaf.settled.as_ref().map(|point| point[0]))
+            .collect();
+        ratios.sort_by(f64::total_cmp);
+        ratios.dedup();
+        assert_eq!(ratios, vec![1.0, 2.0, 4.0]);
     }
 }

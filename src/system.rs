@@ -458,6 +458,29 @@ impl ConstraintSystem {
         })
     }
 
+    /// This system with every discrete variable widened to the interval its
+    /// levels span: what `Infeasibility::BetweenLevels` asks, when a proof
+    /// over the levels needs to know whether the constraints could be met
+    /// between them.
+    ///
+    /// Built again rather than given new supports, because a variable that
+    /// may vary continuously may also be *driven*, so the plans differ.
+    pub(crate) fn relaxed(&self) -> Self {
+        let variables = self
+            .variables
+            .iter()
+            .map(|variable| {
+                InputVariable::new_continuous(
+                    variable.name.clone(),
+                    variable.lower(),
+                    variable.upper(),
+                )
+            })
+            .collect();
+        Self::new(variables, self.constraints())
+            .expect("the same constraints over the same names bind as they did")
+    }
+
     #[must_use]
     pub fn variables(&self) -> &[InputVariable] {
         &self.variables

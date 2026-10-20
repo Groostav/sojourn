@@ -51,14 +51,6 @@
 //! admissible ones — and it may be empty where the interval was not, which is
 //! the whole point: `n` in `[2.5, 2.9]` on the integers is a proof.
 
-// The searches arrive with the rungs that use them — rounding with `hc4` and
-// `prune`, `nearest` with the draws and the repair — and this is the marker
-// that goes when the last of them does.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the level searches' callers land rung by rung")
-)]
-
 use std::ops::RangeInclusive;
 
 use crate::cvg::interval::Interval;

@@ -16,6 +16,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand::{Rng, SeedableRng};
 
 use crate::cvg;
+use crate::cvg::support::VariableSupport;
 use crate::cvg::walking::HitAndRunWalker;
 use crate::cvg::{Ladder, Opening, local};
 use crate::repair::RepairError;
@@ -542,9 +543,54 @@ impl ConstraintSolver {
                     kept,
                 })
             }
-            Opening::Impossible { blamed } => Err(Infeasibility::Proved {
-                blamed: blamed.into_iter().map(|i| system.named(i)).collect(),
-            }),
+            Opening::Impossible { blamed } => {
+                let blamed: Vec<ConstraintRef> =
+                    blamed.into_iter().map(|i| system.named(i)).collect();
+                let discrete = system.supports.iter().any(|support| match support {
+                    VariableSupport::Continuous { .. } => false,
+                    VariableSupport::Discrete(_) => true,
+                });
+                if !discrete {
+                    return Err(Infeasibility::Proved { blamed });
+                }
+                // The proof was over the levels, so it may be the levels that
+                // miss: open the system again with every discrete variable
+                // free to vary continuously. On the stream the region would
+                // have kept, which this path never uses — so nothing more is
+                // drawn from the caller's generator — and without brute
+                // force: the probe, the local solve and branch-and-prune are
+                // what can find a witness in a fraction of what the proof
+                // took, and a relaxation thin enough to need a billion
+                // proposals is no case for telling the caller to move a step.
+                let _span = tracing::debug_span!("relaxation").entered();
+                let relaxation = system.relaxed();
+                let (_, stream) = ladder.into_kept();
+                let budgets = Budgets {
+                    proposals: 0,
+                    gpu_proposals: 0,
+                    ..self.budgets.clone()
+                };
+                let mut relaxed = Ladder::new(&relaxation, stream, &self.strategies, budgets);
+                let (verdict, progress) = cvg::open(&relaxation, &mut relaxed, Vec::new());
+                Err(match verdict {
+                    Opening::Satisfied { .. } => Infeasibility::BetweenLevels {
+                        blamed,
+                        relaxed: progress
+                            .into_points()
+                            .into_iter()
+                            .next()
+                            .expect("a satisfied opening holds a point"),
+                    },
+                    // Infeasible however the variables vary: the formulation
+                    // conflicts, and the continuous proof says where.
+                    Opening::Impossible { blamed } => Infeasibility::Proved {
+                        blamed: blamed.into_iter().map(|i| system.named(i)).collect(),
+                    },
+                    // No continuous witness, so nothing says the levels are
+                    // the trouble; the proof over them stands.
+                    Opening::Unproven { .. } => Infeasibility::Proved { blamed },
+                })
+            }
             Opening::Unproven { unexpressed } => Err(Infeasibility::NotFound {
                 unexpressed: unexpressed.into_iter().map(|i| system.named(i)).collect(),
             }),

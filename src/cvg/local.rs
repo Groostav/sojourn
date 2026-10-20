@@ -93,7 +93,6 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 use super::classify;
 use super::interval::Interval;
-use super::support::VariableSupport;
 use crate::{ConstraintSystem, Point};
 
 /// How many starts a local solve over the declared box gets before
@@ -346,10 +345,7 @@ impl CostFunction for &Landing<'_> {
         // by is a point the caller's levels allow.
         let mut candidate = point;
         for (value, support) in candidate.iter_mut().zip(&self.problem.supports) {
-            match support {
-                VariableSupport::Continuous { .. } => {}
-                VariableSupport::Discrete(levels) => *value = levels.level(levels.nearest(*value)),
-            }
+            *value = support.snap(*value);
         }
         classify::centre(self.problem, &mut candidate);
         let judged = residuals(self.problem, &candidate);

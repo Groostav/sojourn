@@ -193,11 +193,22 @@ const SHRINK_LIMIT: usize = 64;
 pub(crate) struct HitAndRunWalker {
     rng: Xoshiro256PlusPlus,
     chains: Vec<Chain>,
-    /// The coordinates worth moving, fixed for the problem: every coordinate
-    /// unless some are driven, in which case moving those directly walks off
-    /// the surface that defines them and retraction overwrites the move anyway.
-    /// The union over the problem's plans; a chain moves only its own plan's
-    /// free coordinates, and the shape is fitted over the union.
+    frame: Frame,
+    /// Candidates judged so far, over every move: the walker's cost in the
+    /// unit it is paid in, reported at `debug` with each phase.
+    judged: u64,
+}
+
+/// What a move ranges over: the coordinates, fixed for the problem when the
+/// chains are started, and the shape learnt over them. Every move reads it
+/// and none writes it; burn-in is the only writer.
+#[derive(Clone)]
+struct Frame {
+    /// The coordinates worth moving: every coordinate unless some are
+    /// driven, in which case moving those directly walks off the surface that
+    /// defines them and retraction overwrites the move anyway. The union over
+    /// the problem's plans; a chain moves only its own plan's free
+    /// coordinates, and the shape is fitted over the union.
     movable: Vec<usize>,
     /// The continuous ones among `movable`: what a random direction has
     /// components in and the shape is fitted over. A discrete coordinate
@@ -207,9 +218,6 @@ pub(crate) struct HitAndRunWalker {
     /// The region's shape, fitted once the chains have burnt in; `None` until
     /// then, and afterwards if there was nothing to fit or it would not factor.
     transform: Option<Preconditioner>,
-    /// Candidates judged so far, over every move: the walker's cost in the
-    /// unit it is paid in, reported at `debug` with each phase.
-    judged: u64,
 }
 
 /// The shape of the region as the chains learnt it: the lower Cholesky factor
@@ -338,9 +346,11 @@ impl HitAndRunWalker {
         Self {
             rng,
             chains: Vec::new(),
-            movable: Vec::new(),
-            continuous: Vec::new(),
-            transform: None,
+            frame: Frame {
+                movable: Vec::new(),
+                continuous: Vec::new(),
+                transform: None,
+            },
             judged: 0,
         }
     }
@@ -398,7 +408,7 @@ impl HitAndRunWalker {
         let dimensions = existing[0].len();
         let burn_in = MINIMUM_BURN_IN.max(BURN_IN_PER_DIMENSION * dimensions);
         let cadence = thinning_for(dimensions);
-        self.movable = if problem.plans.is_empty() {
+        self.frame.movable = if problem.plans.is_empty() {
             (0..dimensions).collect()
         } else {
             let mut union: Vec<usize> = problem
@@ -410,7 +420,8 @@ impl HitAndRunWalker {
             union.dedup();
             union
         };
-        self.continuous = self
+        self.frame.continuous = self
+            .frame
             .movable
             .iter()
             .copied()
@@ -470,14 +481,14 @@ impl HitAndRunWalker {
                     &mut self.rng,
                     problem,
                     chain.plan.map(|plan| &problem.plans[plan]),
-                    &self.movable,
-                    self.transform.as_ref(),
+                    &self.frame,
                 );
                 chain.point = moved;
                 self.judged += judged;
                 if step >= burn_in / 2 && step % cadence == 0 {
                     states.push(
-                        self.continuous
+                        self.frame
+                            .continuous
                             .iter()
                             .map(|&slot| chain.point[slot])
                             .collect(),
@@ -489,7 +500,7 @@ impl HitAndRunWalker {
         }
         tracing::debug!(judged = self.judged, "burnt in on the sphere");
 
-        self.transform = Preconditioner::fit(&states);
+        self.frame.transform = Preconditioner::fit(&states);
 
         // A second burn-in under that estimate, and a second fit. Chains that
         // crawled on the sphere never traversed a tube, so the first estimate
@@ -499,7 +510,7 @@ impl HitAndRunWalker {
         // first fit had fewer states than dimensions: its shrinkage collapsed
         // it to the diagonal, a refit from the same counts would collapse the
         // same way, and the second burn-in would buy nothing at 200 dimensions.
-        if self.transform.is_some() && states.len() > self.continuous.len() {
+        if self.frame.transform.is_some() && states.len() > self.frame.continuous.len() {
             let mut states: Vec<Vec<f64>> = Vec::new();
             for chain in &mut self.chains {
                 for _ in 0..burn_in {
@@ -509,15 +520,15 @@ impl HitAndRunWalker {
                         &mut self.rng,
                         problem,
                         chain.plan.map(|plan| &problem.plans[plan]),
-                        &self.movable,
-                        self.transform.as_ref(),
+                        &self.frame,
                     );
                     chain.point = moved;
                     self.judged += judged;
                     chain.steps += 1;
                     if chain.steps % cadence == 0 {
                         states.push(
-                            self.continuous
+                            self.frame
+                                .continuous
                                 .iter()
                                 .map(|&slot| chain.point[slot])
                                 .collect(),
@@ -527,7 +538,7 @@ impl HitAndRunWalker {
             }
             tracing::debug!(judged = self.judged, "burnt in under the shape");
             if let Some(refit) = Preconditioner::fit(&states) {
-                self.transform = Some(refit);
+                self.frame.transform = Some(refit);
             }
         }
     }
@@ -567,15 +578,8 @@ impl HitAndRunWalker {
                 let mut steps = self.chains[index].steps;
                 let plan = self.chains[index].plan.map(|plan| &problem.plans[plan]);
                 for _ in 0..thinning {
-                    let (moved, judged) = advance(
-                        point,
-                        steps,
-                        &mut self.rng,
-                        problem,
-                        plan,
-                        &self.movable,
-                        self.transform.as_ref(),
-                    );
+                    let (moved, judged) =
+                        advance(point, steps, &mut self.rng, problem, plan, &self.frame);
                     point = moved;
                     self.judged += judged;
                     steps += 1;
@@ -626,14 +630,13 @@ fn advance(
     rng: &mut Xoshiro256PlusPlus,
     problem: &ConstraintSystem,
     plan: Option<&classify::Plan>,
-    movable: &[usize],
-    transform: Option<&Preconditioner>,
+    frame: &Frame,
 ) -> (Point, u64) {
     let dimensions = from.len();
     let mut judged = 0;
     // The chain's own free coordinates: `movable` where there is one plan or
     // none, a subset of it where the chain is on one branch of several.
-    let free: &[usize] = plan.map_or(movable, classify::Plan::free);
+    let free: &[usize] = plan.map_or(&frame.movable, classify::Plan::free);
 
     if free.is_empty() {
         // Every coordinate is driven, so there is no chord to draw — but the
@@ -676,28 +679,20 @@ fn advance(
         // so the sphere draw is the same draw either way. A coordinate the
         // chain's plan drives gets no component: the move is in the plan's
         // free coordinates, and retraction would overwrite it anyway. Only
-        // the continuous coordinates get one — the walker's `continuous`,
+        // the continuous coordinates get one — the frame's `continuous`,
         // which the shape was fitted over — and the swept coordinate is one
         // of them, so the direction is never all zero.
-        // Filtered in place rather than collected: this is the walker's hot
-        // loop, and a continuous system would pay an allocation a move for a
-        // filter that keeps everything.
-        let continuous = |slot: &&usize| match problem.supports[**slot] {
-            VariableSupport::Continuous { .. } => true,
-            VariableSupport::Discrete(_) => false,
-        };
-        let dimensions_moved = movable.iter().filter(continuous).count();
         debug_assert!(
-            dimensions_moved > 0,
+            frame.continuous.contains(&swept),
             "a continuous coordinate was swept, so there is one"
         );
-        let unit = random_direction(rng, dimensions_moved);
-        let shaped = match transform {
+        let unit = random_direction(rng, frame.continuous.len());
+        let shaped = match &frame.transform {
             Some(transform) => transform.direction(&unit),
             None => unit,
         };
         let mut direction = vec![0.0; dimensions];
-        for (slot, component) in movable.iter().filter(continuous).zip(shaped) {
+        for (slot, component) in frame.continuous.iter().zip(shaped) {
             if plan.is_none_or(|plan| !plan.drives(*slot)) {
                 direction[*slot] = component;
             }

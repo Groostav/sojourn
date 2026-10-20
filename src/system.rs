@@ -565,6 +565,39 @@ impl ConstraintSystem {
             })
     }
 
+    /// `point` with every discrete coordinate on its nearest level — the
+    /// lower of two that tie — and every continuous one exactly as given.
+    ///
+    /// For a caller who maps points into a space of its own and back, as an
+    /// optimizer normalising into `-1..1` does. The round trip moves some
+    /// levels by an ulp (15 of the 101 hundredths of `0..=1`), and
+    /// [`is_feasible`](Self::is_feasible) is exact, so a level that came back
+    /// an ulp off is no longer a level; snapping after the round trip puts it
+    /// back, bit for bit. The oracle stays exact on purpose: a tolerance there
+    /// would change what "feasible" means on every path that judges, and the
+    /// correction belongs where the drift came from, at the caller's boundary.
+    ///
+    /// Not a repair. A value far from every level is still moved onto the
+    /// nearest, a continuous coordinate outside its box stays outside, and the
+    /// result is judged like any other point. A value that is not a number is
+    /// left as it is.
+    ///
+    /// # Panics
+    /// If `point` does not have one coordinate per variable.
+    #[must_use]
+    pub fn snap(&self, point: &[f64]) -> Point {
+        assert_eq!(
+            point.len(),
+            self.variables.len(),
+            "a point has one coordinate per variable of the system it is snapped to"
+        );
+        point
+            .iter()
+            .zip(&self.supports)
+            .map(|(value, support)| support.snap(*value))
+            .collect()
+    }
+
     /// Whether `point[coordinate]` is inside its bounds with `clearance` box
     /// widths to spare on each side; a zero-width coordinate is judged on
     /// containment alone, and so is a discrete one, which has a level or not.

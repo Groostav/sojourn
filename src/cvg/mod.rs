@@ -565,13 +565,21 @@ pub(crate) fn design(
         let bits =
             |point: &Point| -> Vec<u64> { point.iter().map(|value| value.to_bits()).collect() };
         let known: std::collections::HashSet<Vec<u64>> = held.iter().map(bits).collect();
+        // Mixed radix, the first row varying fastest: row `r` steps once
+        // every `strides[r]` points. No product overflows, since the last is
+        // `size`.
+        let strides: Vec<usize> = radix
+            .iter()
+            .scan(1_usize, |stride, levels| {
+                let this = *stride;
+                *stride *= levels.count();
+                Some(this)
+            })
+            .collect();
         for first in (0..size).step_by(ENUMERATION_BATCH) {
             let columns = ENUMERATION_BATCH.min(size - first);
             let batch = faer::Mat::from_fn(radix.len(), columns, |row, column| {
-                // Point `first + column` in mixed radix, the first row
-                // varying fastest.
-                let stride: usize = radix[..row].iter().map(|levels| levels.count()).product();
-                let k = (first + column) / stride % radix[row].count();
+                let k = (first + column) / strides[row] % radix[row].count();
                 radix[row].level(k)
             });
             pool.extend(

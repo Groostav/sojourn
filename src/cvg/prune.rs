@@ -256,12 +256,7 @@ pub(crate) fn contract(
                     before.width() - after.width() > PROGRESS * declared[row.index()]
                 }
                 VariableSupport::Discrete(levels) => {
-                    let held = |interval: Interval| {
-                        levels
-                            .within(interval)
-                            .map_or(0, |range| range.end() - range.start() + 1)
-                    };
-                    held(after) < held(before)
+                    levels.count_within(after) < levels.count_within(before)
                 }
             };
             if !progressed {
@@ -351,9 +346,7 @@ pub(crate) fn bisect(
                     (*width > 0.0 && relative >= RESOLUTION).then_some((row, relative))
                 }
                 VariableSupport::Discrete(levels) => {
-                    let held = levels
-                        .within(*interval)
-                        .map_or(0, |range| range.end() - range.start() + 1);
+                    let held = levels.count_within(*interval);
                     // Two levels held means at least two declared, so the
                     // division is by one or more.
                     (held >= 2).then(|| (row, (held - 1) as f64 / (levels.count() - 1) as f64))
@@ -370,9 +363,7 @@ pub(crate) fn bisect(
             .zip(&problem.supports)
             .all(|(interval, support)| match support {
                 VariableSupport::Continuous { .. } => interval.lo() == interval.hi(),
-                VariableSupport::Discrete(levels) => levels
-                    .within(*interval)
-                    .is_some_and(|range| range.start() == range.end()),
+                VariableSupport::Discrete(levels) => levels.count_within(*interval) == 1,
             })
     };
     let settle = |node: Node| -> Leaf {

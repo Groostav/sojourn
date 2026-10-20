@@ -176,6 +176,17 @@ impl VariableSupport {
             Self::Discrete(levels) => levels.round_inward(interval),
         }
     }
+
+    /// `value` on its nearest level, the lower of two that tie; unchanged for
+    /// a continuous coordinate, in its bounds or not. A value that is not a
+    /// number is near no level and stays what it is, for the oracle to refuse.
+    pub(crate) fn snap(&self, value: f64) -> f64 {
+        match self {
+            Self::Continuous { .. } => value,
+            Self::Discrete(_) if value.is_nan() => value,
+            Self::Discrete(levels) => levels.level(levels.nearest(value)),
+        }
+    }
 }
 
 impl Levels {
@@ -222,6 +233,10 @@ impl Levels {
 
     /// The index of the level nearest `value`, the lower of two that tie.
     pub(crate) fn nearest(&self, value: f64) -> usize {
+        // Clamped into the span first, which moves no answer, so that an
+        // infinite value is not infinitely far from both ends' candidates and
+        // tied onto the lower.
+        let value = value.clamp(self.level(0), self.level(self.count() - 1));
         let around = self.estimate(value).unwrap_or(0);
         let candidates = around.saturating_sub(1)..=(around + 1).min(self.count() - 1);
         candidates
@@ -242,6 +257,36 @@ impl Levels {
         let first = self.at_or_above(interval.lo())?;
         let last = self.at_or_below(interval.hi())?;
         (first <= last).then_some(first..=last)
+    }
+
+    /// How many levels `interval` holds.
+    pub(crate) fn count_within(&self, interval: Interval) -> usize {
+        self.within(interval)
+            .map_or(0, |range| range.end() - range.start() + 1)
+    }
+
+    /// Every index, the level nearest `value` first and then outward: of the
+    /// two either side of those taken so far, the nearer, the lower of two
+    /// that tie. Lazy, so taking the nearest few of a million levels costs a
+    /// few.
+    pub(crate) fn outward_from(&self, value: f64) -> impl Iterator<Item = usize> + '_ {
+        let nearest = self.nearest(value);
+        // `below..=above` is what has been taken.
+        let (mut below, mut above) = (nearest, nearest);
+        let far = move |k: usize| (self.level(k) - value).abs();
+        std::iter::once(nearest).chain(std::iter::from_fn(move || {
+            let down = below.checked_sub(1);
+            let up = (above + 1 < self.count()).then_some(above + 1);
+            let next = match (down, up) {
+                (Some(down), Some(up)) if far(up) < far(down) => up,
+                (Some(down), _) => down,
+                (None, Some(up)) => up,
+                (None, None) => return None,
+            };
+            below = below.min(next);
+            above = above.max(next);
+            Some(next)
+        }))
     }
 
     /// The smallest interval holding every level inside `interval` — empty if
@@ -524,6 +569,52 @@ mod tests {
         // assert
         assert!(between.is_empty(), "{between:?}");
         assert_eq!(across, Interval::new(0.5, 1.0));
+    }
+
+    #[test]
+    fn levels_are_counted_within_an_interval() {
+        // setup
+        let integers = stepped(0.0, 1.0, 10.0);
+
+        // act, assert
+        assert_eq!(integers.count_within(Interval::new(2.5, 2.9)), 0);
+        assert_eq!(integers.count_within(Interval::new(2.5, 5.0)), 3);
+        assert_eq!(integers.count_within(Interval::ENTIRE), 11);
+        assert_eq!(integers.count_within(Interval::EMPTY), 0);
+    }
+
+    #[test]
+    fn levels_are_taken_outward_from_the_nearest() {
+        // setup
+        let integers = stepped(0.0, 1.0, 10.0);
+        let listed = discrete(Domain::Levels(vec![0.25, 0.5, 1.0, 2.0]));
+
+        // act
+        let between: Vec<usize> = integers.outward_from(2.4).collect();
+        let on_a_level: Vec<usize> = integers.outward_from(2.0).take(5).collect();
+        let past_the_end: Vec<usize> = integers.outward_from(99.0).take(3).collect();
+        let uneven: Vec<usize> = listed.outward_from(1.4).collect();
+
+        // assert
+        assert_eq!(between, vec![2, 3, 1, 4, 0, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(on_a_level, vec![2, 1, 3, 0, 4], "the lower of a tie first");
+        assert_eq!(past_the_end, vec![10, 9, 8]);
+        assert_eq!(uneven, vec![2, 3, 1, 0]);
+    }
+
+    #[test]
+    fn a_snap_is_the_nearest_level_and_leaves_continuous_values_alone() {
+        // setup
+        let tenths = VariableSupport::of(&InputVariable::new_discrete("t", 0.0, 0.1, 1.0));
+        let continuous = VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0));
+
+        // act, assert
+        assert_eq!(tenths.snap(0.1 * 3.0).to_bits(), 0.3_f64.to_bits());
+        assert_eq!(tenths.snap(0.27).to_bits(), 0.3_f64.to_bits());
+        assert_eq!(tenths.snap(f64::INFINITY), 1.0);
+        assert!(tenths.snap(f64::NAN).is_nan());
+        assert_eq!(continuous.snap(0.1 * 3.0), 0.1 * 3.0);
+        assert_eq!(continuous.snap(7.0), 7.0, "out of bounds, and not moved");
     }
 
     #[test]

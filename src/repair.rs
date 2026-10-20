@@ -313,46 +313,26 @@ pub(crate) fn repair(
 
     let _span = tracing::debug_span!("levels", discrete = discrete.len()).entered();
     let widths = crate::cvg::widths(system);
-    // Per discrete row, its levels nearest `point` first: outward from the
-    // nearest, never more than the search could visit, so a lattice of a
-    // million levels is never listed.
+    // Per discrete row, its levels nearest `point` first, each with its share
+    // of the squared distance: never more than the search could visit, so a
+    // lattice of a million levels is never listed.
     let candidates: Vec<Vec<(f64, f64)>> = discrete
         .iter()
         .map(|(row, levels)| {
             let value = point[*row];
-            let far = |level: f64| {
-                if widths[*row] > 0.0 {
-                    ((level - value) / widths[*row]).powi(2)
-                } else {
-                    0.0
-                }
-            };
-            // `below..above` is what has been taken: the nearest level, then
-            // whichever neighbour of that run is nearer, each time.
-            let nearest = levels.nearest(value);
-            let (mut below, mut above) = (nearest, nearest + 1);
-            let mut ordered = vec![(levels.level(nearest), far(levels.level(nearest)))];
-            while ordered.len() < LEVEL_SEARCH_BUDGET {
-                let down = (below > 0).then(|| levels.level(below - 1));
-                let up = (above < levels.count()).then(|| levels.level(above));
-                let level = match (down, up) {
-                    (Some(down), Some(up)) if far(down) <= far(up) => {
-                        below -= 1;
-                        down
-                    }
-                    (Some(down), None) => {
-                        below -= 1;
-                        down
-                    }
-                    (_, Some(up)) => {
-                        above += 1;
-                        up
-                    }
-                    (None, None) => break,
-                };
-                ordered.push((level, far(level)));
-            }
-            ordered
+            levels
+                .outward_from(value)
+                .take(LEVEL_SEARCH_BUDGET)
+                .map(|k| {
+                    let level = levels.level(k);
+                    let far = if widths[*row] > 0.0 {
+                        ((level - value) / widths[*row]).powi(2)
+                    } else {
+                        0.0
+                    };
+                    (level, far)
+                })
+                .collect()
         })
         .collect();
 
@@ -404,41 +384,18 @@ pub(crate) fn repair(
         ))
     };
 
-    let mut best: Option<(f64, Point)> = None;
-    let mut cramped: Option<(f64, Point)> = None;
-    let keep = |outcome: Result<Point, RepairError>,
-                best: &mut Option<(f64, Point)>,
-                cramped: &mut Option<(f64, Point)>| match outcome {
-        Ok(landed) => {
-            let at = distance(&widths, &landed, point);
-            nearer(best, at, landed);
-        }
-        Err(RepairError::Cramped { nearest, .. }) => {
-            let at = distance(&widths, &nearest, point);
-            nearer(cramped, at, nearest);
-        }
-        Err(RepairError::Stranded) => {}
-    };
-
-    // Best-first over the product of the per-row lists: the heap holds
-    // assignments by their discrete distance, an index per row into its list.
-    let squared = |indices: &[usize]| -> f64 {
-        indices
-            .iter()
-            .zip(&candidates)
-            .map(|(index, list)| list[*index].1)
-            .sum()
-    };
-    let start = vec![0; discrete.len()];
-    let mut frontier = std::collections::BinaryHeap::from([Ranked(squared(&start), start.clone())]);
-    let mut visited = std::collections::HashSet::from([start]);
+    // Nearest first, until the next assignment is no nearer in its levels
+    // alone than the nearest landing so far, which nothing after it can beat
+    // either, or until the budget is spent.
+    let costs = candidates
+        .iter()
+        .map(|list| list.iter().map(|(_, far)| *far).collect())
+        .collect();
+    let mut outcomes: Vec<Result<Point, RepairError>> = Vec::new();
+    let mut landed = f64::INFINITY;
     let mut tried = 0;
-    while let Some(Ranked(discrete_squared, indices)) = frontier.pop() {
-        if best
-            .as_ref()
-            .is_some_and(|(nearest, _)| discrete_squared.sqrt() >= *nearest)
-            || tried >= LEVEL_SEARCH_BUDGET
-        {
+    for (squared, indices) in Assignments::new(costs) {
+        if tried >= LEVEL_SEARCH_BUDGET || squared.sqrt() >= landed {
             break;
         }
         let assignment: Vec<f64> = indices
@@ -446,38 +403,110 @@ pub(crate) fn repair(
             .zip(&candidates)
             .map(|(index, list)| list[*index].0)
             .collect();
-        if let Some(outcome) = attempt(&assignment) {
-            tried += 1;
-            keep(outcome, &mut best, &mut cramped);
+        let Some(outcome) = attempt(&assignment) else {
+            continue;
+        };
+        tried += 1;
+        if let Ok(repaired) = &outcome {
+            landed = landed.min(distance(&widths, repaired, point));
         }
-        for row in 0..indices.len() {
-            if indices[row] + 1 < candidates[row].len() {
-                let mut next = indices.clone();
-                next[row] += 1;
-                if visited.insert(next.clone()) {
-                    frontier.push(Ranked(squared(&next), next));
-                }
-            }
-        }
+        outcomes.push(outcome);
     }
-    if best.is_none() {
+    if !outcomes.iter().any(Result::is_ok) {
         let own: Vec<f64> = discrete.iter().map(|(row, _)| reference[*row]).collect();
-        if let Some(outcome) = attempt(&own) {
-            keep(outcome, &mut best, &mut cramped);
+        outcomes.extend(attempt(&own));
+    }
+    tracing::debug!(tried, landed = landed.is_finite(), "searched the levels");
+
+    let mut clear: Vec<Point> = Vec::new();
+    let mut cramped: Vec<Point> = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Ok(repaired) => clear.push(repaired),
+            Err(RepairError::Cramped { nearest, .. }) => cramped.push(nearest),
+            Err(RepairError::Stranded) => {}
         }
     }
-    tracing::debug!(tried, landed = best.is_some(), "searched the levels");
-
-    match (best, cramped) {
-        (Some((_, landed)), _) => Ok(landed),
-        (None, Some((_, nearest))) => Err(RepairError::Cramped { nearest, clearance }),
+    // The first of two that tie, as everywhere else in repair.
+    let nearest = |points: Vec<Point>| {
+        points
+            .into_iter()
+            .min_by(|a, b| distance(&widths, a, point).total_cmp(&distance(&widths, b, point)))
+    };
+    match (nearest(clear), nearest(cramped)) {
+        (Some(repaired), _) => Ok(repaired),
+        (None, Some(nearest)) => Err(RepairError::Cramped { nearest, clearance }),
         (None, None) => Err(RepairError::Stranded),
     }
 }
 
-/// An assignment of levels in the search's frontier, ordered so that
-/// [`std::collections::BinaryHeap`] pops the nearest first: by its squared
-/// discrete distance, then by its indices, so the order is deterministic.
+/// Every assignment of one index per row, nearest first: each row's costs
+/// ascend, and an assignment costs the sum of its rows' costs at its indices.
+/// A best-first walk over the product, so the product is never listed: the
+/// frontier is what has been reached and not yet taken, and every step from
+/// an assignment raises one index, which costs no less. Ties are broken by
+/// the indices, so the order is the same every time.
+///
+/// What [`repair`]'s search over levels walks, a cost being a level's share
+/// of the squared distance. Pure, and tested on its own below.
+struct Assignments {
+    costs: Vec<Vec<f64>>,
+    frontier: std::collections::BinaryHeap<Ranked>,
+    visited: std::collections::HashSet<Vec<usize>>,
+}
+
+impl Assignments {
+    /// # Panics
+    /// If a row has no costs, or its costs do not ascend: the walk would then
+    /// come out of order without saying so.
+    fn new(costs: Vec<Vec<f64>>) -> Self {
+        assert!(
+            costs
+                .iter()
+                .all(|row| !row.is_empty() && row.is_sorted_by(|a, b| a <= b)),
+            "every row has costs, in ascending order: {costs:?}"
+        );
+        let start = vec![0; costs.len()];
+        let ranked = Ranked(summed(&costs, &start), start.clone());
+        Self {
+            costs,
+            frontier: std::collections::BinaryHeap::from([ranked]),
+            visited: std::collections::HashSet::from([start]),
+        }
+    }
+}
+
+impl Iterator for Assignments {
+    /// The assignment's cost, and its index per row.
+    type Item = (f64, Vec<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Ranked(cost, indices) = self.frontier.pop()?;
+        for row in 0..indices.len() {
+            if indices[row] + 1 < self.costs[row].len() {
+                let mut next = indices.clone();
+                next[row] += 1;
+                if self.visited.insert(next.clone()) {
+                    self.frontier.push(Ranked(summed(&self.costs, &next), next));
+                }
+            }
+        }
+        Some((cost, indices))
+    }
+}
+
+/// What the assignment `indices` costs: each row's cost at its index, summed.
+fn summed(costs: &[Vec<f64>], indices: &[usize]) -> f64 {
+    indices
+        .iter()
+        .zip(costs)
+        .map(|(index, row)| row[*index])
+        .sum()
+}
+
+/// An assignment in [`Assignments`]' frontier, ordered so that
+/// [`std::collections::BinaryHeap`] pops the cheapest first: by its cost,
+/// then by its indices, so the order is deterministic.
 #[derive(PartialEq)]
 struct Ranked(f64, Vec<usize>);
 
@@ -1145,4 +1174,52 @@ fn released(
         }
     }
     candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Assignments;
+
+    #[test]
+    fn assignments_come_nearest_first() {
+        // setup
+        let costs = vec![vec![0.0, 1.0, 4.0], vec![0.0, 0.5]];
+
+        // act
+        let walked: Vec<(f64, Vec<usize>)> = Assignments::new(costs).collect();
+
+        // assert
+        assert_eq!(
+            walked,
+            vec![
+                (0.0, vec![0, 0]),
+                (0.5, vec![0, 1]),
+                (1.0, vec![1, 0]),
+                (1.5, vec![1, 1]),
+                (4.0, vec![2, 0]),
+                (4.5, vec![2, 1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tie_between_assignments_is_broken_the_same_way_every_time() {
+        // setup
+        let costs = vec![vec![0.0, 1.0], vec![0.0, 1.0]];
+
+        // act
+        let first: Vec<Vec<usize>> = Assignments::new(costs.clone()).map(|(_, at)| at).collect();
+        let second: Vec<Vec<usize>> = Assignments::new(costs).map(|(_, at)| at).collect();
+
+        // assert
+        assert_eq!(first, vec![vec![0, 0], vec![0, 1], vec![1, 0], vec![1, 1]]);
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    #[should_panic(expected = "in ascending order")]
+    fn costs_out_of_order_are_refused() {
+        // setup, act
+        Assignments::new(vec![vec![1.0, 0.0]]);
+    }
 }

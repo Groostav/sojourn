@@ -232,6 +232,14 @@ making them a special case:
   so a level changes exactly when that lands nearer.
 - **The GPU.** The sieve draws levels from a table, and survivors are snapped
   to the nearest level before the CPU judges them.
+- **The oracle.** `is_feasible` is exact on levels and stays that way. A
+  caller whose round trip drifts a level by an ulp calls
+  `ConstraintSystem::snap`, the public face of `VariableSupport::snap`.
+
+Level arithmetic lives in `cvg::support` and nowhere else: `snap`,
+`count_within`, `outward_from`, `within`, `split`. A `match` on a support
+elsewhere decides what a rung does with a discrete coordinate, never how to
+compute with its levels.
 
 Categories with no order are the caller's to alias onto an integer lattice;
 "nearest" and "spread" then read the index order. The measurements and

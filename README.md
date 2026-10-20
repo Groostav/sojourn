@@ -158,7 +158,10 @@ continuously, the verdict is `Infeasibility::BetweenLevels`, carrying a continuo
 witness: the formula is fine, and it's the step or the list of levels that needs to
 change. A system of discrete variables alone with a small lattice is enumerated, so
 asking for more points than it has returns `SampleError::Exhausted` with every one of
-them. `repair` moves a level exactly when that lands nearer.
+them. `repair` moves a level exactly when that lands nearer. The oracle is exact on
+levels, so if you map points into a space of your own and back, as normalising into
+`-1..1` does, `ConstraintSystem::snap` puts each discrete coordinate back on its level
+before you judge it: the round trip moves 15 of the 101 hundredths of `0..=1` by an ulp.
 
 ### Scales to engineering problems
 

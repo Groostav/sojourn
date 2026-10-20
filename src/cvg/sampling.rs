@@ -92,9 +92,7 @@ enum Draw<'a> {
 /// whatever the row is.
 ///
 /// Column-major: the outer loop is over columns because a column is contiguous
-/// and a row is strided; the per-row draw table is computed once. A box with no
-/// discrete row runs the plain `(low, scale)` loop, which is the hot path of
-/// every continuous search and is kept free of the per-value `match`.
+/// and a row is strided; the per-row draw table is computed once.
 pub(crate) fn fill(
     candidates: &mut Mat<f64>,
     supports: &[VariableSupport],
@@ -118,23 +116,6 @@ pub(crate) fn fill(
             },
         })
         .collect();
-
-    let spans: Option<Vec<(f64, f64)>> = table
-        .iter()
-        .map(|draw| match draw {
-            Draw::Span { low, scale } => Some((*low, *scale)),
-            Draw::Level { .. } => None,
-        })
-        .collect();
-    if let Some(spans) = spans {
-        for column in 0..candidates.ncols() {
-            for (value, &(low, scale)) in candidates.col_as_slice_mut(column).iter_mut().zip(&spans)
-            {
-                *value = low + unit(rng.next_u64()) * scale;
-            }
-        }
-        return;
-    }
 
     for column in 0..candidates.ncols() {
         for (value, draw) in candidates.col_as_slice_mut(column).iter_mut().zip(&table) {
@@ -413,11 +394,7 @@ fn brute_force_on_gpu(
         // level: each discrete coordinate goes back to the nearest one before
         // the exact judgement, which decides whatever the device thought.
         let matrix = Mat::from_fn(problem.variables().len(), survivors.len(), |row, column| {
-            let value = survivors[column][row];
-            match &problem.supports[row] {
-                VariableSupport::Continuous { .. } => value,
-                VariableSupport::Discrete(levels) => levels.level(levels.nearest(value)),
-            }
+            problem.supports[row].snap(survivors[column][row])
         });
         let points = problem.feasible_columns(matrix.as_ref());
         tracing::debug!(

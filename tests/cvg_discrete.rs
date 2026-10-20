@@ -179,6 +179,72 @@ fn clearance_does_not_apply_to_a_discrete_coordinate() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A caller who normalises every variable into `-1..1` and back moves some
+/// levels by an ulp, and the oracle is exact, so the point it was handed is
+/// no longer feasible. Snapping is the explicit way back: every one of a
+/// hundred and one hundredths returns bit-equal to its level.
+#[test]
+fn a_level_round_tripped_through_the_unit_cube_snaps_back_onto_it() -> anyhow::Result<()> {
+    let system = system(
+        vec![InputVariable::new_discrete("t", 0.0, 0.01, 1.0)],
+        &["t <= 1"],
+    )?;
+    let levels: Vec<f64> = (0..=100)
+        .map(|k| format!("{}.{:02}", k / 100, k % 100).parse())
+        .collect::<Result<Vec<f64>, _>>()?;
+    let (lower, upper) = (0.0, 1.0);
+    let round_tripped: Vec<f64> = levels
+        .iter()
+        .map(|level| {
+            let normalised = 2.0 * (level - lower) / (upper - lower) - 1.0;
+            lower + (normalised + 1.0) / 2.0 * (upper - lower)
+        })
+        .collect();
+
+    let snapped: Vec<f64> = round_tripped
+        .iter()
+        .map(|value| system.snap(&[*value])[0])
+        .collect();
+
+    let drifted = round_tripped
+        .iter()
+        .filter(|value| !system.is_feasible(&[**value], 0.0))
+        .count();
+    assert!(drifted > 0, "the round trip moves some level off itself");
+    for (snapped, level) in snapped.iter().zip(&levels) {
+        assert_eq!(snapped.to_bits(), level.to_bits(), "{snapped} for {level}");
+        assert!(system.is_feasible(&[*snapped], 0.0));
+    }
+    Ok(())
+}
+
+/// Snapping puts a discrete coordinate on its nearest level — the lower of
+/// two that tie, and an end level from past the bounds — and leaves every
+/// continuous coordinate exactly as given, in or out of its box. It is not a
+/// repair: the snapped point is judged like any other.
+#[test]
+fn snapping_moves_discrete_coordinates_alone() -> anyhow::Result<()> {
+    let system = system(
+        vec![
+            InputVariable::new("v", Domain::Levels(vec![2.0, 5.0])),
+            InputVariable::new_continuous("x", 0.0, 1.0),
+            InputVariable::new_discrete("n", 0.0, 1.0, 10.0),
+        ],
+        &["x <= 1"],
+    )?;
+
+    let tie = system.snap(&[3.5, 0.123_456_789, 2.5]);
+    let outside = system.snap(&[-7.0, 1.5, 99.0]);
+
+    assert_eq!(tie, vec![2.0, 0.123_456_789, 2.0]);
+    assert_eq!(outside, vec![2.0, 1.5, 10.0]);
+    assert!(
+        !system.is_feasible(&outside, 0.0),
+        "x is still outside its box"
+    );
+    Ok(())
+}
+
 // --- Proofs -----------------------------------------------------------------
 
 /// The smallest proof over levels: `(2.5, 2.9)` holds no integer. Rounding the

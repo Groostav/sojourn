@@ -316,8 +316,11 @@ thing to read, and is the first work item rather than an admission.
 - [ ] **Discrete variables: three things left open.** *2026-10-20.* The design and the
       reasons are in part two under "Discrete variables".
       - **Measure the hot path.** `just bench` against `e8ed673`, on the continuous-only
-        cases: the box check now reads a `VariableSupport` per coordinate, and `fill` builds
-        a draw table. Neither should show, and that has not been measured.
+        cases: the box check now reads a `VariableSupport` per coordinate, and `fill`
+        matches a draw table per value. `fill` had a separate all-continuous loop, added
+        for speed and never measured, so it went; if the bench shows the `match`, that
+        loop comes back with the number beside it. Neither should show, and that has not
+        been measured.
       - **A walker chain cannot follow an equality between discrete variables.**
         `n == 3*m +/- 0.1` with both stepped: a move changes one level at a time, and
         every single-level move leaves the line, so a chain stays where it started. A
@@ -2455,6 +2458,27 @@ coordinate that every stage already handles.
 - **Defect found.** The search exposed one in the continuous path. The reference stage
   offered its chord's end as feasible without judging it, which was safe only while the
   reference was always feasible. It now judges it.
+
+**The oracle stays exact; the caller snaps.** *2026-10-20.* Artemis normalises every
+variable into `-1..1` and back, and the round trip moves a level by an ulp: 15 of the 101
+hundredths of `0..=1` come back off their level, and `is_feasible` rejects a point
+sojourn handed out. Two fixes were weighed. A tolerant oracle, snapping discrete
+coordinates within some distance before judging, would change what "feasible" means on
+every judging path, the walker's hot loop included, and would need a tolerance nobody
+can choose well. `ConstraintSystem::snap`, a pure function the caller applies after its
+own round trip, keeps the oracle exact and puts the correction where the drift came
+from. Snapping is to the nearest level always, not within a tolerance: it is the caller's
+statement that the coordinate is meant to be on a level, and a far-off value is then a
+proposal to judge or repair, not something to hide. Writing its test found
+`Levels::nearest(inf)` returning the second-to-last level, both candidates being
+infinitely far; it now clamps into the span first.
+
+The centre of a two-level variable, where HDS and Artemis anchor at normalised zero, is
+never a level, so it always goes to repair. Both levels are equally far, so the
+continuous coordinates decide, and an exact tie goes to the lower level. That bias stays
+in the anchor: a design with the anchor among its existing points spreads to the other
+level next. On uneven levels the centre is by value, not by index: `{1, 2, 4}` centres
+at 2.5 and repairs to 2.
 
 **The GPU draws levels from a table.** Each row is `(lower, upper, count, offset)`, the
 last two carried as `u32` bits in `f32`. A discrete row draws `levels[offset +

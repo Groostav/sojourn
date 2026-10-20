@@ -51,6 +51,7 @@ use askama::Template;
 use faer::MatRef;
 use wgpu::util::DeviceExt;
 
+use super::support::VariableSupport;
 use crate::eval::wgsl::{Function, Prelude};
 use crate::solve::GpuTarget;
 use crate::{ConstraintSystem, GPU_VARIABLE, Point};
@@ -367,6 +368,17 @@ impl Sieve {
     /// is no adapter, or the shader does not build — the caller then takes
     /// the CPU path, which is never wrong, only slower.
     pub(crate) fn new(problem: &ConstraintSystem, state: &GpuTarget) -> Option<Self> {
+        // The device draws every coordinate uniformly over its bounds, so a
+        // discrete one would be off its levels on every draw and every
+        // survivor rejected on the CPU: a budget spent finding nothing.
+        let discrete = problem.supports.iter().any(|support| match support {
+            VariableSupport::Continuous { .. } => false,
+            VariableSupport::Discrete(_) => true,
+        });
+        if discrete {
+            tracing::debug!("the sieve does not draw levels yet; brute force stays on the CPU");
+            return None;
+        }
         let gpu = acquire(state)?;
         let variables = problem.variables().len();
         if variables == 0 {
@@ -436,17 +448,18 @@ impl Sieve {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bounds =
-            gpu.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("bounds"),
-                    contents: &bytes_of_f32(
-                        problem.variables.iter().flat_map(|variable| {
-                            [narrow(variable.lower()), narrow(variable.upper())]
-                        }),
-                    ),
-                    usage: wgpu::BufferUsages::STORAGE,
-                });
+        let bounds = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bounds"),
+                contents: &bytes_of_f32(
+                    problem
+                        .supports
+                        .iter()
+                        .flat_map(|support| [narrow(support.lower()), narrow(support.upper())]),
+                ),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let survivors = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("survivors"),
             size: survivor_bytes,

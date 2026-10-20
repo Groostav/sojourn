@@ -60,7 +60,6 @@ pub(crate) mod classify;
 #[cfg(feature = "gpu")]
 #[doc(hidden)]
 pub mod gpu;
-pub(crate) mod grid;
 pub(crate) mod hc4;
 pub(crate) mod incidence;
 pub(crate) mod interval;
@@ -71,6 +70,7 @@ mod prune;
 pub(crate) mod sampling;
 #[cfg(feature = "gpu")]
 mod sieve;
+pub(crate) mod support;
 pub(crate) mod walking;
 
 use std::collections::VecDeque;
@@ -187,7 +187,7 @@ impl Ladder {
                 Strategy::Prune => ladder.prune = Some(budgets.prune),
                 Strategy::BruteSquad => {
                     let sampler = RandomSampler::new(
-                        &system.variables,
+                        &system.supports,
                         stream,
                         budgets.proposals,
                         budgets.threads,
@@ -514,7 +514,7 @@ pub(crate) fn design(
         return Vec::new();
     }
     let mut sampler = RandomSampler::new(
-        &problem.variables,
+        &problem.supports,
         Xoshiro256PlusPlus::from_rng(&mut rng),
         0,
         1,
@@ -581,9 +581,9 @@ pub(crate) fn design(
 /// Each variable's box width, the scale [`normalised_distance`] divides by.
 pub(crate) fn widths(problem: &ConstraintSystem) -> Vec<f64> {
     problem
-        .variables
+        .supports
         .iter()
-        .map(|variable| variable.upper() - variable.lower())
+        .map(|support| support.upper() - support.lower())
         .collect()
 }
 

@@ -674,11 +674,11 @@ fn sampled(
             let mut draw: Point = point
                 .iter()
                 .zip(widths)
-                .zip(system.variables())
-                .map(|((centre, width), variable)| {
+                .zip(&system.supports)
+                .map(|((centre, width), support)| {
                     let step = radius * width;
                     rng.random_range(centre - step..=centre + step)
-                        .clamp(variable.lower(), variable.upper())
+                        .clamp(support.lower(), support.upper())
                 })
                 .collect();
             // Driven coordinates onto their surfaces, at the middle of the
@@ -856,7 +856,13 @@ fn landed(system: &ConstraintSystem, point: &Point, coordinate: usize, clearance
     let mut neighbour = point.clone();
     system.incidence.affected(Row(coordinate)).iter().all(|id| {
         let rows = system.incidence.rows_of(*id);
-        system.constraints[id.index()].holds(point, rows, &system.grids, clearance, &mut neighbour)
+        system.constraints[id.index()].holds(
+            point,
+            rows,
+            &system.supports,
+            clearance,
+            &mut neighbour,
+        )
     })
 }
 

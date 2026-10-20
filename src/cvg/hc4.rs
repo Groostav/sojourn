@@ -337,8 +337,10 @@ const fn how_op(how: Accumulate) -> BinaryOp {
 ///
 /// Constraints are applied in order and each sees what the previous ones
 /// concluded, so a system narrows further than any one of its constraints
-/// would. Nothing here iterates to a fixpoint: every coordinate but this one
-/// is a point, which leaves a second pass with nothing to tighten.
+/// would. A discrete coordinate's slice is rounded inward onto its levels,
+/// which keeps it a superset of the values it may take (see `cvg::support`).
+/// Nothing here iterates to a fixpoint: every coordinate but this one is a
+/// point, which leaves a second pass with nothing to tighten.
 pub(crate) fn slice(system: &ConstraintSystem, point: &Point, coordinate: usize) -> Interval {
     slice_conditioned(system, point, coordinate, None)
 }
@@ -357,8 +359,8 @@ pub(crate) fn slice_conditioned(
     coordinate: usize,
     settled: Option<&[bool]>,
 ) -> Interval {
-    let input = &system.variables[coordinate];
-    let mut interval = Interval::new(input.lower(), input.upper());
+    let support = &system.supports[coordinate];
+    let mut interval = Interval::new(support.lower(), support.upper());
     let mut frames = Frames::default();
 
     let coordinate = Row(coordinate);
@@ -392,10 +394,15 @@ pub(crate) fn slice_conditioned(
             .collect();
 
         let wanted = u32::try_from(wanted).expect("fewer than four billion symbols");
-        interval = interval.intersect(system.constraints[id.index()].intervals.narrow(
-            &globals,
-            GlobalId::from_index(wanted),
-            &mut frames,
+        // Onto the coordinate's levels, if it has any, after every narrowing
+        // rather than once at the end: the next constraint then narrows from
+        // levels, and a slice between two levels is found empty at once.
+        interval = support.round_inward(interval.intersect(
+            system.constraints[id.index()].intervals.narrow(
+                &globals,
+                GlobalId::from_index(wanted),
+                &mut frames,
+            ),
         ));
         if interval.is_empty() {
             break;
@@ -492,5 +499,28 @@ mod tests {
         let got = narrower.narrow(&globals, wanted, &mut frames);
         // 49 others at 1 leave 51 for this one.
         assert!(got.hi() >= 51.0 && got.hi() < 51.0 + 1e-6, "{got:?}");
+    }
+
+    /// A discrete coordinate's slice is rounded onto its levels: `n > 2.5`
+    /// leaves `n` the integers from 3, and `n > 10.2` leaves it none, which
+    /// the interval alone would not have said.
+    #[test]
+    fn a_discrete_slice_is_rounded_onto_its_levels() {
+        // setup
+        let system = crate::system::tests::system(
+            vec![
+                crate::InputVariable::new_discrete("n", 0.0, 1.0, 10.0),
+                crate::InputVariable::new_continuous("x", 0.0, 10.0),
+            ],
+            &["n > x + 0.5"],
+        );
+
+        // act
+        let above = slice(&system, &vec![0.0, 2.0], 0);
+        let past = slice(&system, &vec![0.0, 9.7], 0);
+
+        // assert
+        assert_eq!(above, Interval::new(3.0, 10.0));
+        assert!(past.is_empty(), "{past:?}");
     }
 }

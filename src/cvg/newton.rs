@@ -151,14 +151,14 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
     let rows = constraints + 2 * dimensions;
 
     let lower: Vec<f64> = system
-        .variables
+        .supports
         .iter()
-        .map(|variable| variable.lower())
+        .map(|support| support.lower())
         .collect();
     let width: Vec<f64> = system
-        .variables
+        .supports
         .iter()
-        .map(|variable| variable.upper() - variable.lower())
+        .map(|support| support.upper() - support.lower())
         .collect();
     let normalised = |point: &[f64]| -> Vec<f64> {
         point

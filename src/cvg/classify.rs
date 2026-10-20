@@ -61,6 +61,7 @@ use rand::RngExt;
 use rand::rngs::Xoshiro256PlusPlus;
 
 use crate::ast::{Expr, GlobalId, Kind, Program};
+use crate::cvg::support::VariableSupport;
 use crate::cvg::{hc4, interval};
 use crate::{Ast, ConstraintSystem, Point, Schema};
 
@@ -309,8 +310,8 @@ pub(crate) fn tightest(system: &ConstraintSystem, point: &Point) -> Vec<usize> {
         let mut score = 0.0;
         for driven in plan.driven().iter().copied() {
             let slice = hc4::slice_conditioned(system, point, driven, Some(&settled));
-            let variable = &system.variables[driven];
-            let width = variable.upper() - variable.lower();
+            let support = &system.supports[driven];
+            let width = support.upper() - support.lower();
             score += if slice.is_empty() || width <= 0.0 {
                 1.0
             } else {
@@ -521,7 +522,15 @@ const PLAN_SEARCH: usize = 4096;
 /// way leaves its constraint exactly as it was — **no constraint is ever
 /// dropped**, because the walker still checks feasibility against all of
 /// them. A refused drive costs efficiency and can never cost correctness.
-pub(crate) fn plans(constraints: &[Ast], schema: &Schema) -> Vec<Plan> {
+///
+/// A discrete position is never driven: an equality solved for it computes a
+/// value between its levels, which no move could keep. `supports` is the
+/// schema's, position for position.
+pub(crate) fn plans(
+    constraints: &[Ast],
+    schema: &Schema,
+    supports: &[VariableSupport],
+) -> Vec<Plan> {
     // Per equation, the schema positions it could drive, best first.
     let candidates: Vec<Vec<usize>> = constraints
         .iter()
@@ -529,6 +538,10 @@ pub(crate) fn plans(constraints: &[Ast], schema: &Schema) -> Vec<Plan> {
             drivable(constraint)
                 .into_iter()
                 .filter_map(|variable| position_in(schema, constraint, variable))
+                .filter(|position| match supports[*position] {
+                    VariableSupport::Continuous { .. } => true,
+                    VariableSupport::Discrete(_) => false,
+                })
                 .collect()
         })
         .collect();
@@ -964,7 +977,14 @@ mod tests {
     fn plans_over(names: &[&str], sources: &[&str]) -> Vec<Plan> {
         let schema = Schema::for_names(names);
         let constraints: Vec<Ast> = sources.iter().map(|s| parse(s)).collect();
-        plans(&constraints, &schema)
+        let supports = vec![
+            VariableSupport::Continuous {
+                lower: f64::NEG_INFINITY,
+                upper: f64::INFINITY
+            };
+            names.len()
+        ];
+        plans(&constraints, &schema, &supports)
     }
 
     #[test]

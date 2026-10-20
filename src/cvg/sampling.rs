@@ -29,8 +29,9 @@ use super::classify;
 use super::progress::Trial;
 #[cfg(feature = "gpu")]
 use super::sieve::{GPU_BATCH, Sieve};
+use super::support::{Levels, VariableSupport};
 use crate::solve::GpuTarget;
-use crate::{ConstraintSystem, InputVariable, Point};
+use crate::{ConstraintSystem, Point};
 
 /// How many candidates to propose per point asked for.
 ///
@@ -64,28 +65,86 @@ fn unit(bits: u64) -> f64 {
 /// one, and that check rejects it — exactly as it rejected `random_range`'s own
 /// overshoot.
 ///
-/// Column-major: the outer loop is over columns because a column is contiguous
-/// and a row is strided; the per-row `(low, scale)` table is computed once.
+/// The continuous case of `fill`, kept with its own signature because the
+/// fixtures in `tests/` that measure the fill alone have bounds, not supports.
 pub fn fill_box(candidates: &mut Mat<f64>, bounds: &[(f64, f64)], rng: &mut Xoshiro256PlusPlus) {
+    let supports: Vec<VariableSupport> = bounds
+        .iter()
+        .map(|&(lower, upper)| VariableSupport::Continuous { lower, upper })
+        .collect();
+    fill(candidates, &supports, rng);
+}
+
+/// One row's draw, worked out once per fill rather than once per value.
+enum Draw<'a> {
+    /// `low + u * scale`. A zero `scale` is a row of no width, which still
+    /// takes its draw: every row consumes one value of the stream, so a fixed
+    /// variable does not shift the draws of the rows after it.
+    Span { low: f64, scale: f64 },
+    /// Level `floor(u * count)` — uniform over the levels to within `2^-53`
+    /// of each one's share.
+    Level { levels: &'a Levels, count: f64 },
+}
+
+/// Fills every column of `candidates` with one draw per row of `supports`: a
+/// continuous row uniform over its bounds, as [`fill_box`] says; a discrete
+/// row uniform over its levels. One value of `rng` per row per column,
+/// whatever the row is.
+///
+/// Column-major: the outer loop is over columns because a column is contiguous
+/// and a row is strided; the per-row draw table is computed once. A box with no
+/// discrete row runs the plain `(low, scale)` loop, which is the hot path of
+/// every continuous search and is kept free of the per-value `match`.
+pub(crate) fn fill(
+    candidates: &mut Mat<f64>,
+    supports: &[VariableSupport],
+    rng: &mut Xoshiro256PlusPlus,
+) {
     assert_eq!(
         candidates.nrows(),
-        bounds.len(),
-        "one bound per row of the candidate matrix"
+        supports.len(),
+        "one support per row of the candidate matrix"
     );
-    let table: Vec<(f64, f64)> = bounds
+    let table: Vec<Draw<'_>> = supports
         .iter()
-        .map(|&(low, high)| {
-            if low >= high {
-                (low, 0.0)
-            } else {
-                (low, high - low)
-            }
+        .map(|support| match support {
+            VariableSupport::Continuous { lower, upper } => Draw::Span {
+                low: *lower,
+                scale: if lower >= upper { 0.0 } else { upper - lower },
+            },
+            VariableSupport::Discrete(levels) => Draw::Level {
+                levels,
+                count: levels.count() as f64,
+            },
         })
         .collect();
 
+    let spans: Option<Vec<(f64, f64)>> = table
+        .iter()
+        .map(|draw| match draw {
+            Draw::Span { low, scale } => Some((*low, *scale)),
+            Draw::Level { .. } => None,
+        })
+        .collect();
+    if let Some(spans) = spans {
+        for column in 0..candidates.ncols() {
+            for (value, &(low, scale)) in candidates.col_as_slice_mut(column).iter_mut().zip(&spans)
+            {
+                *value = low + unit(rng.next_u64()) * scale;
+            }
+        }
+        return;
+    }
+
     for column in 0..candidates.ncols() {
-        for (value, &(low, scale)) in candidates.col_as_slice_mut(column).iter_mut().zip(&table) {
-            *value = low + unit(rng.next_u64()) * scale;
+        for (value, draw) in candidates.col_as_slice_mut(column).iter_mut().zip(&table) {
+            let u = unit(rng.next_u64());
+            *value = match draw {
+                Draw::Span { low, scale } => low + u * scale,
+                Draw::Level { levels, count } => {
+                    levels.level(((u * count) as usize).min(levels.count() - 1))
+                }
+            };
         }
     }
 }
@@ -121,8 +180,8 @@ const MAX_BATCH_COLUMNS: usize = 16_384;
 /// reaches a seed at all.
 pub(crate) struct RandomSampler {
     rng: Xoshiro256PlusPlus,
-    /// The declared box, as `(low, high)` per variable, in `fill_box`'s shape.
-    bounds: Vec<(f64, f64)>,
+    /// What each variable may take, as the system declares it.
+    supports: Vec<VariableSupport>,
     /// Candidates the brute-force search may propose before giving up. Zero
     /// disables it.
     budget: u64,
@@ -145,20 +204,16 @@ pub(crate) struct RandomSampler {
 
 impl RandomSampler {
     pub(crate) fn new(
-        variables: &[InputVariable],
+        supports: &[VariableSupport],
         rng: Xoshiro256PlusPlus,
         budget: u64,
         threads: usize,
         gpu: GpuTarget,
         gpu_proposals: u64,
     ) -> Self {
-        let bounds = variables
-            .iter()
-            .map(|variable| (variable.lower(), variable.upper()))
-            .collect();
         Self {
             rng,
-            bounds,
+            supports: supports.to_vec(),
             budget,
             threads: threads.max(1),
             gpu,
@@ -191,8 +246,8 @@ impl RandomSampler {
     /// One fill of `columns` candidates from the stream, judged, keeping at
     /// most `keep` of the hits.
     fn round(&mut self, problem: &ConstraintSystem, columns: usize, keep: usize) -> Trial {
-        let mut candidates = Mat::zeros(self.bounds.len(), columns);
-        fill_box(&mut candidates, &self.bounds, &mut self.rng);
+        let mut candidates = Mat::zeros(self.supports.len(), columns);
+        fill(&mut candidates, &self.supports, &mut self.rng);
         let mut points = problem.feasible_columns(candidates.as_ref());
         points.truncate(keep);
         Trial {
@@ -203,7 +258,7 @@ impl RandomSampler {
 
     /// Columns per batch of the brute-force search.
     fn batch_columns(&self) -> usize {
-        let rows = self.bounds.len().max(1);
+        let rows = self.supports.len().max(1);
         (BATCH_BYTES / (rows * size_of::<f64>())).clamp(MIN_BATCH_COLUMNS, MAX_BATCH_COLUMNS)
     }
 
@@ -250,7 +305,7 @@ impl RandomSampler {
     fn brute_force_on_cpu(&self, problem: &ConstraintSystem, base: u64) -> Trial {
         let columns = self.batch_columns();
         let batches = self.budget.div_ceil(columns as u64);
-        let rows = self.bounds.len();
+        let rows = self.supports.len();
 
         let winner = AtomicU64::new(u64::MAX);
         let best: Mutex<Option<(u64, Vec<Point>)>> = Mutex::new(None);
@@ -263,7 +318,7 @@ impl RandomSampler {
             let mut k = first;
             while k < batches && k <= winner.load(Ordering::Acquire) {
                 let mut rng = Xoshiro256PlusPlus::seed_from_u64(base ^ k);
-                fill_box(&mut candidates, &self.bounds, &mut rng);
+                fill(&mut candidates, &self.supports, &mut rng);
                 // Driven coordinates are computed rather than guessed, which is
                 // what lets a random draw land on a measure-zero surface at all.
                 // Without it `y == sin(x) +/- 1e-9` is never hit and the budget
@@ -380,7 +435,9 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::Xoshiro256PlusPlus;
 
-    use super::{UNIT, fill_box, unit};
+    use super::{UNIT, fill, fill_box, unit};
+    use crate::cvg::support::VariableSupport;
+    use crate::{Domain, InputVariable};
 
     #[test]
     fn unit_spans_zero_to_just_below_one() {
@@ -435,6 +492,69 @@ mod tests {
     }
 
     #[test]
+    fn a_discrete_row_is_drawn_on_its_levels_and_reaches_every_one() {
+        // setup
+        let levels = vec![0.25, 0.5, 1.0, 2.0];
+        let supports = [
+            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0)),
+            VariableSupport::of(&InputVariable::new("n", Domain::Levels(levels.clone()))),
+        ];
+        let mut candidates = Mat::zeros(2, 10_000);
+
+        // act
+        fill(
+            &mut candidates,
+            &supports,
+            &mut Xoshiro256PlusPlus::seed_from_u64(7),
+        );
+
+        // assert
+        let drawn: Vec<f64> = (0..candidates.ncols())
+            .map(|c| candidates[(1, c)])
+            .collect();
+        for value in &drawn {
+            assert!(levels.contains(value), "{value} is not a level");
+        }
+        for level in &levels {
+            assert!(drawn.contains(level), "level {level} was never drawn");
+        }
+    }
+
+    /// Every row takes one value of the stream whatever it is, so a discrete
+    /// row leaves the draws of the rows around it where a continuous one in
+    /// its place would have.
+    #[test]
+    fn a_discrete_row_does_not_shift_the_draws_around_it() {
+        // setup
+        let mixed = [
+            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0)),
+            VariableSupport::of(&InputVariable::new_discrete("n", 0.0, 1.0, 9.0)),
+            VariableSupport::of(&InputVariable::new_continuous("y", -1.0, 1.0)),
+        ];
+        let mut with_levels = Mat::zeros(3, 100);
+        let mut without = Mat::zeros(3, 100);
+
+        // act
+        fill(
+            &mut with_levels,
+            &mixed,
+            &mut Xoshiro256PlusPlus::seed_from_u64(11),
+        );
+        fill_box(
+            &mut without,
+            &[(0.0, 1.0), (0.0, 9.0), (-1.0, 1.0)],
+            &mut Xoshiro256PlusPlus::seed_from_u64(11),
+        );
+
+        // assert
+        for c in 0..100 {
+            for r in [0, 2] {
+                assert_eq!(with_levels[(r, c)].to_bits(), without[(r, c)].to_bits());
+            }
+        }
+    }
+
+    #[test]
     fn an_empty_range_fills_with_its_lower_bound() {
         let mut candidates = Mat::zeros(2, 50);
         fill_box(
@@ -470,7 +590,7 @@ mod brute_force_tests {
             &[source],
         );
         let mut sampler = RandomSampler::new(
-            &problem.variables,
+            &problem.supports,
             Xoshiro256PlusPlus::seed_from_u64(SEED),
             budget,
             threads,

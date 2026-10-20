@@ -121,6 +121,7 @@ use faer::{Mat, Side};
 use rand::RngExt;
 use rand::rngs::Xoshiro256PlusPlus;
 
+use super::support::{Levels, VariableSupport};
 use super::{classify, hc4};
 use crate::{ConstraintSystem, Point};
 
@@ -198,6 +199,11 @@ pub(crate) struct HitAndRunWalker {
     /// The union over the problem's plans; a chain moves only its own plan's
     /// free coordinates, and the shape is fitted over the union.
     movable: Vec<usize>,
+    /// The continuous ones among `movable`: what a random direction has
+    /// components in and the shape is fitted over. A discrete coordinate
+    /// moves only along its own axis, from level to level — a direction
+    /// through it would land between levels on every draw.
+    continuous: Vec<usize>,
     /// The region's shape, fitted once the chains have burnt in; `None` until
     /// then, and afterwards if there was nothing to fit or it would not factor.
     transform: Option<Preconditioner>,
@@ -333,6 +339,7 @@ impl HitAndRunWalker {
             rng,
             chains: Vec::new(),
             movable: Vec::new(),
+            continuous: Vec::new(),
             transform: None,
             judged: 0,
         }
@@ -403,6 +410,15 @@ impl HitAndRunWalker {
             union.dedup();
             union
         };
+        self.continuous = self
+            .movable
+            .iter()
+            .copied()
+            .filter(|slot| match problem.supports[*slot] {
+                VariableSupport::Continuous { .. } => true,
+                VariableSupport::Discrete(_) => false,
+            })
+            .collect();
         let mut states: Vec<Vec<f64>> = Vec::new();
 
         // Selection is quadratic in the candidate count, and `existing` grows
@@ -460,7 +476,12 @@ impl HitAndRunWalker {
                 chain.point = moved;
                 self.judged += judged;
                 if step >= burn_in / 2 && step % cadence == 0 {
-                    states.push(self.movable.iter().map(|&slot| chain.point[slot]).collect());
+                    states.push(
+                        self.continuous
+                            .iter()
+                            .map(|&slot| chain.point[slot])
+                            .collect(),
+                    );
                 }
             }
             chain.steps = burn_in;
@@ -478,7 +499,7 @@ impl HitAndRunWalker {
         // first fit had fewer states than dimensions: its shrinkage collapsed
         // it to the diagonal, a refit from the same counts would collapse the
         // same way, and the second burn-in would buy nothing at 200 dimensions.
-        if self.transform.is_some() && states.len() > self.movable.len() {
+        if self.transform.is_some() && states.len() > self.continuous.len() {
             let mut states: Vec<Vec<f64>> = Vec::new();
             for chain in &mut self.chains {
                 for _ in 0..burn_in {
@@ -495,7 +516,12 @@ impl HitAndRunWalker {
                     self.judged += judged;
                     chain.steps += 1;
                     if chain.steps % cadence == 0 {
-                        states.push(self.movable.iter().map(|&slot| chain.point[slot]).collect());
+                        states.push(
+                            self.continuous
+                                .iter()
+                                .map(|&slot| chain.point[slot])
+                                .collect(),
+                        );
                     }
                 }
             }
@@ -630,6 +656,16 @@ fn advance(
     let swept = free[step % free.len()];
     let along_axis = rng.random_range(0.0..1.0) < AXIS_MOVE_PROBABILITY;
 
+    // A discrete coordinate moves along its axis whatever the coin said —
+    // drawn every step all the same, so a system with no discrete
+    // coordinate draws exactly what it always did.
+    match &problem.supports[swept] {
+        VariableSupport::Discrete(levels) => {
+            return level_move(from, swept, levels, rng, problem, plan);
+        }
+        VariableSupport::Continuous { .. } => {}
+    }
+
     let direction = if along_axis {
         let mut axis = vec![0.0; dimensions];
         axis[swept] = 1.0;
@@ -639,14 +675,29 @@ fn advance(
         // unit vector and normalising is bending the raw draw and normalising,
         // so the sphere draw is the same draw either way. A coordinate the
         // chain's plan drives gets no component: the move is in the plan's
-        // free coordinates, and retraction would overwrite it anyway.
-        let unit = random_direction(rng, movable.len());
+        // free coordinates, and retraction would overwrite it anyway. Only
+        // the continuous coordinates get one — the walker's `continuous`,
+        // which the shape was fitted over — and the swept coordinate is one
+        // of them, so the direction is never all zero.
+        // Filtered in place rather than collected: this is the walker's hot
+        // loop, and a continuous system would pay an allocation a move for a
+        // filter that keeps everything.
+        let continuous = |slot: &&usize| match problem.supports[**slot] {
+            VariableSupport::Continuous { .. } => true,
+            VariableSupport::Discrete(_) => false,
+        };
+        let dimensions_moved = movable.iter().filter(continuous).count();
+        debug_assert!(
+            dimensions_moved > 0,
+            "a continuous coordinate was swept, so there is one"
+        );
+        let unit = random_direction(rng, dimensions_moved);
         let shaped = match transform {
             Some(transform) => transform.direction(&unit),
             None => unit,
         };
         let mut direction = vec![0.0; dimensions];
-        for (slot, component) in movable.iter().zip(shaped) {
+        for (slot, component) in movable.iter().filter(continuous).zip(shaped) {
             if plan.is_none_or(|plan| !plan.drives(*slot)) {
                 direction[*slot] = component;
             }
@@ -751,6 +802,65 @@ fn axis_chord(from: &Point, axis: usize, problem: &ConstraintSystem) -> (f64, f6
     )
 }
 
+/// A Gibbs move on a discrete coordinate: a level drawn uniformly from those
+/// the constraints leave it, the driven coordinates put back on their
+/// surfaces, and the candidate judged — shrinking the range of levels toward
+/// the current one on a miss, as [`advance`] shrinks a chord.
+///
+/// The slice is taken with the chain's driven coordinates *unsettled*: they
+/// are recomputed after the move, so a constraint naming one says nothing
+/// about where this coordinate may go. Conditioning on it would pin a count
+/// of bolts to the load it was driven from, and the chain would never change
+/// its count. The shrink excludes each rejected level, so none is drawn
+/// twice; the current level, which the chain stands on, is never excluded,
+/// and drawing it again re-draws the driven coordinates, which is a move.
+fn level_move(
+    from: Point,
+    axis: usize,
+    levels: &Levels,
+    rng: &mut Xoshiro256PlusPlus,
+    problem: &ConstraintSystem,
+    plan: Option<&classify::Plan>,
+) -> (Point, u64) {
+    let slice = match plan {
+        Some(plan) => {
+            let mut settled = vec![true; from.len()];
+            for driven in plan.driven() {
+                settled[*driven] = false;
+            }
+            hc4::slice_conditioned(problem, &from, axis, Some(&settled))
+        }
+        None => hc4::slice(problem, &from, axis),
+    };
+    let (Some(range), Some(current)) = (levels.within(slice), levels.index_of(from[axis])) else {
+        return (from, 0);
+    };
+    if !range.contains(&current) {
+        return (from, 0);
+    }
+
+    let (mut lowest, mut highest) = (*range.start(), *range.end());
+    let mut judged = 0;
+    for _ in 0..SHRINK_LIMIT {
+        let k = rng.random_range(lowest..=highest);
+        let mut candidate = from.clone();
+        candidate[axis] = levels.level(k);
+        if let Some(plan) = plan {
+            classify::retract(problem, plan, &mut candidate, rng);
+        }
+        judged += 1;
+        if problem.is_feasible(&candidate, 0.0) {
+            return (candidate, judged);
+        }
+        match k.cmp(&current) {
+            std::cmp::Ordering::Less => lowest = k + 1,
+            std::cmp::Ordering::Greater => highest = k - 1,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    (from, judged)
+}
+
 /// How far `from` can travel either side along `direction` and stay in the box.
 ///
 /// The interval brackets zero. This is a pure box calculation — feasibility does
@@ -760,7 +870,7 @@ fn axis_chord(from: &Point, axis: usize, problem: &ConstraintSystem) -> (f64, f6
 /// not.
 fn box_chord(from: &Point, direction: &[f64], problem: &ConstraintSystem) -> (f64, f64) {
     let (mut lower, mut upper) = (f64::NEG_INFINITY, f64::INFINITY);
-    for (index, input) in problem.variables().iter().enumerate() {
+    for (index, support) in problem.supports.iter().enumerate() {
         let component = direction[index];
 
         // A zero component means the ray is parallel to this pair of walls and
@@ -772,8 +882,8 @@ fn box_chord(from: &Point, direction: &[f64], problem: &ConstraintSystem) -> (f6
             continue;
         }
 
-        let to_lower = (input.lower() - from[index]) / component;
-        let to_upper = (input.upper() - from[index]) / component;
+        let to_lower = (support.lower() - from[index]) / component;
+        let to_upper = (support.upper() - from[index]) / component;
         let (near, far) = if to_lower < to_upper {
             (to_lower, to_upper)
         } else {
@@ -984,6 +1094,39 @@ mod tests {
         assert!(
             bent > 0.95,
             "directions should hug the tube, got {bent} against the sphere's {sphere}"
+        );
+    }
+
+    /// A chain over discrete coordinates alone moves from level to level and
+    /// never between them: every move is along an axis, and every axis move
+    /// lands on a level.
+    #[test]
+    fn a_discrete_chain_never_leaves_its_levels() {
+        // setup
+        let system = crate::system::tests::system(
+            vec![
+                crate::InputVariable::new_discrete("n", 0.0, 1.0, 20.0),
+                crate::InputVariable::new_discrete("m", 0.0, 0.5, 10.0),
+            ],
+            &["n + m <= 20"],
+        );
+        let mut walker = super::HitAndRunWalker::new(rng());
+
+        // act
+        let points = walker.extend(&system, &[vec![0.0, 0.0]], 200);
+
+        // assert
+        assert_eq!(points.len(), 200);
+        for point in &points {
+            assert!(system.is_feasible(point, 0.0), "{point:?}");
+        }
+        let mut seen: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
+        seen.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        seen.dedup();
+        assert!(
+            seen.len() > 50,
+            "the chain barely moved: {} points",
+            seen.len()
         );
     }
 }

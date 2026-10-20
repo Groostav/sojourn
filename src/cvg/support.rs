@@ -8,6 +8,25 @@
 //! goes through here rather than through the declaration, which the engine
 //! never re-reads.
 //!
+//! # Why "support"
+//!
+//! In probability, the *support* of a random variable is the set of values it
+//! can take — the set its distribution puts weight on. A uniform variable on
+//! `[0, 1]` has the interval as its support; a fair die has `{1, …, 6}`. That
+//! is exactly what this is for each coordinate of a point, and sojourn's
+//! points are random draws, so the statistician's word is the plain one here.
+//!
+//! It is not the [`Domain`], though it is made from one. A domain is what the
+//! caller wrote — a declaration, kept as given and read back for names and
+//! messages. A support is that declaration checked, and precomputed into the
+//! form arithmetic on it needs: a lattice's decimal integers are worked out
+//! once here, because doing it per judgement means formatting floats. And the
+//! two can differ on purpose: the relaxation behind
+//! `Infeasibility::BetweenLevels` is the same system with every discrete
+//! support widened to its interval, and repair's search over levels pins a
+//! discrete support to one value. The declaration says what the caller asked
+//! for; the support says what this search is letting a coordinate take.
+//!
 //! # A lattice is decimal
 //!
 //! `Stepped { lower: 0.0, step: 0.1, upper: 1.0 }` computed as `lower + k·step`
@@ -45,9 +64,11 @@ use std::ops::RangeInclusive;
 use crate::cvg::interval::Interval;
 use crate::{Domain, InputVariable};
 
-/// What one coordinate may take.
+/// The support of one variable: the values its coordinate may take, as the
+/// engine computes with them. See the module header for the word and for
+/// how it differs from the [`Domain`] it is made from.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Grid {
+pub(crate) enum VariableSupport {
     /// Every value from `lower` to `upper`, inclusive.
     Continuous { lower: f64, upper: f64 },
     /// Exactly the levels, and nothing between them.
@@ -84,8 +105,8 @@ pub(crate) enum Scale {
 const EXACT_POWER: i32 = 22;
 const EXACT_INTEGER: i128 = 1 << 53;
 
-impl Grid {
-    /// The grid `variable` declares.
+impl VariableSupport {
+    /// The support `variable` declares.
     ///
     /// # Panics
     /// If the declaration is ill-formed: bounds that are not finite or are
@@ -218,7 +239,7 @@ impl Levels {
                     .abs()
                     .total_cmp(&(self.level(b) - value).abs())
             })
-            .expect("a grid has at least one level")
+            .expect("a support has at least one level")
     }
 
     /// The indices of the levels inside `interval`, or `None` if it holds none.
@@ -283,7 +304,7 @@ impl Levels {
     }
 
     /// An index within one of the level nearest `value`, clamped into the
-    /// grid, which callers settle by comparing levels: arithmetic on a
+    /// support, which callers settle by comparing levels: arithmetic on a
     /// lattice, a binary search on a list. `None` for a value that is not a
     /// number.
     fn estimate(&self, value: f64) -> Option<usize> {
@@ -392,9 +413,9 @@ mod tests {
     use super::*;
 
     fn discrete(domain: Domain) -> Levels {
-        match Grid::of(&InputVariable::new("x", domain)) {
-            Grid::Discrete(levels) => levels,
-            Grid::Continuous { .. } => panic!("the fixture declares a discrete domain"),
+        match VariableSupport::of(&InputVariable::new("x", domain)) {
+            VariableSupport::Discrete(levels) => levels,
+            VariableSupport::Continuous { .. } => panic!("the fixture declares a discrete domain"),
         }
     }
 
@@ -531,15 +552,15 @@ mod tests {
     }
 
     #[test]
-    fn a_continuous_grid_is_its_bounds() {
+    fn a_continuous_support_is_its_bounds() {
         // setup
-        let grid = Grid::of(&InputVariable::new_continuous("x", -1.0, 2.0));
+        let support = VariableSupport::of(&InputVariable::new_continuous("x", -1.0, 2.0));
 
         // act, assert
-        assert!(grid.contains(0.123));
-        assert!(!grid.contains(2.5));
+        assert!(support.contains(0.123));
+        assert!(!support.contains(2.5));
         assert_eq!(
-            grid.round_inward(Interval::new(0.1, 0.2)),
+            support.round_inward(Interval::new(0.1, 0.2)),
             Interval::new(0.1, 0.2)
         );
     }

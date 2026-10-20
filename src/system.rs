@@ -24,9 +24,9 @@
 use faer::MatRef;
 
 use crate::cvg::classify;
-use crate::cvg::grid::Grid;
 use crate::cvg::hc4::{self, IntervalTape};
 use crate::cvg::incidence::{ConstraintId, Incidence, Row};
+use crate::cvg::support::VariableSupport;
 use crate::diagnostics::CompilationFailure;
 use crate::eval::Gradient;
 use crate::{Ast, CompiledExpression, Schema};
@@ -129,7 +129,7 @@ impl InputVariable {
     /// If the domain is ill-formed, as [`ConstraintSystem::new`] would.
     #[must_use]
     pub fn contains(&self, value: f64) -> bool {
-        Grid::of(self).contains(value)
+        VariableSupport::of(self).contains(value)
     }
 }
 
@@ -186,7 +186,7 @@ impl Constraint {
         &self,
         point: &[f64],
         rows: &[Row],
-        grids: &[Grid],
+        supports: &[VariableSupport],
         clearance: f64,
         neighbour: &mut [f64],
     ) -> bool {
@@ -204,9 +204,9 @@ impl Constraint {
         }
         for row in rows {
             let coordinate = row.index();
-            let step = match grids[coordinate] {
-                Grid::Continuous { lower, upper } => clearance * (upper - lower),
-                Grid::Discrete(_) => continue,
+            let step = match supports[coordinate] {
+                VariableSupport::Continuous { lower, upper } => clearance * (upper - lower),
+                VariableSupport::Discrete(_) => continue,
             };
             if step <= 0.0 {
                 continue;
@@ -238,10 +238,12 @@ impl Constraint {
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem {
     pub(crate) variables: Vec<InputVariable>,
-    /// What each variable may take, derived from its domain and validated
-    /// once, in the same order: what every judgement and draw reads, so no
-    /// hot path re-derives a lattice.
-    pub(crate) grids: Vec<Grid>,
+    /// Each variable's *support* — the set of values it may take, the
+    /// probabilist's word (see `cvg::support`) — derived from its domain and
+    /// validated once, in the same order: what every judgement and draw
+    /// reads, so no hot path re-derives a lattice, and the one thing a
+    /// relaxed or pinned copy of the system changes.
+    pub(crate) supports: Vec<VariableSupport>,
     /// Every constraint as written and as compiled, at construction. Compiling
     /// is how a constraint is proved to bind, so the tape is kept rather than
     /// made again.
@@ -342,7 +344,7 @@ impl ConstraintSystem {
         variables: Vec<InputVariable>,
         constraints: impl IntoIterator<Item = S>,
     ) -> Result<Self, SystemError> {
-        let mut grids = Vec::with_capacity(variables.len());
+        let mut supports = Vec::with_capacity(variables.len());
         for (index, variable) in variables.iter().enumerate() {
             let name = &variable.name;
             assert!(
@@ -355,7 +357,7 @@ impl ConstraintSystem {
                     .all(|earlier| earlier.name != *name),
                 "variable {index} repeats the name {name:?}"
             );
-            grids.push(Grid::of(variable));
+            supports.push(VariableSupport::of(variable));
         }
         let schema = Schema::new(variables.iter().map(|input| input.name.clone()));
 
@@ -411,7 +413,7 @@ impl ConstraintSystem {
             compiled.push(tape);
         }
 
-        let plans = classify::plans(&resolved, &schema);
+        let plans = classify::plans(&resolved, &schema, &supports);
 
         // What counts as affected by *any* move, whichever coordinate it
         // touched. Both entries here are soundness rather than efficiency.
@@ -449,7 +451,7 @@ impl ConstraintSystem {
 
         Ok(Self {
             variables,
-            grids,
+            supports,
             constraints,
             plans,
             incidence,
@@ -517,7 +519,7 @@ impl ConstraintSystem {
             .enumerate()
             .all(|(index, constraint)| {
                 let rows = self.incidence.rows_of(ConstraintId(index));
-                constraint.holds(point, rows, &self.grids, clearance, &mut neighbour)
+                constraint.holds(point, rows, &self.supports, clearance, &mut neighbour)
             })
     }
 
@@ -525,16 +527,16 @@ impl ConstraintSystem {
     /// widths to spare on each side; a zero-width coordinate is judged on
     /// containment alone, and so is a discrete one, which has a level or not.
     pub(crate) fn within(&self, point: &[f64], coordinate: usize, clearance: f64) -> bool {
-        let grid = &self.grids[coordinate];
+        let support = &self.supports[coordinate];
         let value = point[coordinate];
-        let step = match grid {
-            Grid::Continuous { lower, upper } => clearance * (upper - lower),
-            Grid::Discrete(_) => 0.0,
+        let step = match support {
+            VariableSupport::Continuous { lower, upper } => clearance * (upper - lower),
+            VariableSupport::Discrete(_) => 0.0,
         };
         if step > 0.0 {
-            grid.contains(value - step) && grid.contains(value + step)
+            support.contains(value - step) && support.contains(value + step)
         } else {
-            grid.contains(value)
+            support.contains(value)
         }
     }
 
@@ -553,9 +555,9 @@ impl ConstraintSystem {
     /// The declared box, one interval per variable in row order: what a
     /// contraction starts from and a local solve's unit cube maps onto.
     pub(crate) fn declared(&self) -> Vec<crate::cvg::interval::Interval> {
-        self.grids
+        self.supports
             .iter()
-            .map(|grid| crate::cvg::interval::Interval::new(grid.lower(), grid.upper()))
+            .map(|support| crate::cvg::interval::Interval::new(support.lower(), support.upper()))
             .collect()
     }
 
@@ -571,10 +573,10 @@ impl ConstraintSystem {
     pub fn worst_residual(&self, point: &[f64]) -> Option<f64> {
         let in_box = point.len() == self.variables.len()
             && self
-                .grids
+                .supports
                 .iter()
                 .zip(point)
-                .all(|(grid, value)| grid.contains(*value));
+                .all(|(support, value)| support.contains(*value));
         if !in_box {
             return None;
         }
@@ -602,10 +604,10 @@ impl ConstraintSystem {
 
         let mut pass: Vec<bool> = (0..columns)
             .map(|column| {
-                self.grids
+                self.supports
                     .iter()
                     .enumerate()
-                    .all(|(row, grid)| grid.contains(candidates[(row, column)]))
+                    .all(|(row, support)| support.contains(candidates[(row, column)]))
             })
             .collect();
 

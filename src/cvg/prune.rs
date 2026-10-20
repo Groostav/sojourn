@@ -60,6 +60,7 @@ use super::classify;
 use super::hc4::Frames;
 use super::incidence::{ConstraintId, Row};
 use super::interval::Interval;
+use super::support::VariableSupport;
 use crate::ast::GlobalId;
 use crate::{ConstraintSystem, Point};
 
@@ -115,11 +116,26 @@ impl Node {
         }
     }
 
-    /// The point in the middle of every coordinate.
-    fn centre(&self) -> Point {
+    /// The point in the middle of every coordinate — for a discrete one, the
+    /// level nearest the middle among those the box holds, since a seed off
+    /// its levels is no seed. A box holding none of its levels keeps the
+    /// middle; it is judged infeasible like any other miss.
+    fn centre(&self, problem: &ConstraintSystem) -> Point {
         self.bounds
             .iter()
-            .map(|interval| interval.lo() + interval.width() / 2.0)
+            .zip(&problem.supports)
+            .map(|(interval, support)| {
+                let middle = interval.lo() + interval.width() / 2.0;
+                match support {
+                    VariableSupport::Continuous { .. } => middle,
+                    VariableSupport::Discrete(levels) => {
+                        levels.within(*interval).map_or(middle, |held| {
+                            let nearest = levels.nearest(middle).clamp(*held.start(), *held.end());
+                            levels.level(nearest)
+                        })
+                    }
+                }
+            })
             .collect()
     }
 
@@ -187,9 +203,9 @@ pub(crate) fn contract(
 ) -> Contracted {
     let constraints = problem.constraints.len();
     let declared: Vec<f64> = problem
-        .variables
+        .supports
         .iter()
-        .map(|variable| variable.upper() - variable.lower())
+        .map(|support| support.upper() - support.lower())
         .collect();
 
     // A worklist with an "already waiting" flag, so a constraint is queued at
@@ -286,9 +302,9 @@ pub(crate) fn bisect(
     contributed: &mut [bool],
 ) -> Pruned {
     let declared: Vec<f64> = problem
-        .variables
+        .supports
         .iter()
-        .map(|variable| variable.upper() - variable.lower())
+        .map(|support| support.upper() - support.lower())
         .collect();
     // The coordinate to split a box on: the widest relative to its declared
     // width, if that is wide enough to be worth splitting.
@@ -307,7 +323,7 @@ pub(crate) fn bisect(
         // The centre, with every driven coordinate put at the centre of its
         // band: the one move that puts a point of a thick box onto a thin
         // surface, and a no-op where nothing is driven.
-        let mut centre = node.centre();
+        let mut centre = node.centre(problem);
         classify::centre(problem, &mut centre);
         let settled = problem.is_feasible(&centre, 0.0).then_some(centre);
         Leaf { node, settled }

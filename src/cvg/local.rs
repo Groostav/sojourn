@@ -93,6 +93,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 use super::classify;
 use super::interval::Interval;
+use super::support::VariableSupport;
 use crate::{ConstraintSystem, Point};
 
 /// How many starts a local solve over the declared box gets before
@@ -338,16 +339,27 @@ impl CostFunction for &Landing<'_> {
         // still the raw one, which is what the solver's models are of.
         // Inside the box, every residual `<= 0`, nothing non-finite — the
         // oracle's own rule. The first such point ends the run.
+        //
+        // A discrete coordinate is put on its nearest level first, before
+        // the driven ones are centred against it: the solver moves through
+        // the relaxation, where the cost has a slope, and what it is judged
+        // by is a point the caller's levels allow.
         let mut candidate = point;
+        for (value, support) in candidate.iter_mut().zip(&self.problem.supports) {
+            match support {
+                VariableSupport::Continuous { .. } => {}
+                VariableSupport::Discrete(levels) => *value = levels.level(levels.nearest(*value)),
+            }
+        }
         classify::centre(self.problem, &mut candidate);
         let judged = residuals(self.problem, &candidate);
         let worst = judged.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let inside = self
             .problem
-            .grids
+            .supports
             .iter()
             .zip(&candidate)
-            .all(|(grid, value)| grid.contains(*value));
+            .all(|(support, value)| support.contains(*value));
         if inside && worst <= 0.0 {
             let mut best = self.best.borrow_mut();
             if best.as_ref().is_none_or(|(deepest, _)| worst < *deepest) {

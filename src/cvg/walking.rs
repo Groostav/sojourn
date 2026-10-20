@@ -772,8 +772,8 @@ fn box_chord(from: &Point, direction: &[f64], problem: &ConstraintSystem) -> (f6
             continue;
         }
 
-        let to_lower = (input.lower_bound - from[index]) / component;
-        let to_upper = (input.upper_bound - from[index]) / component;
+        let to_lower = (input.lower() - from[index]) / component;
+        let to_upper = (input.upper() - from[index]) / component;
         let (near, far) = if to_lower < to_upper {
             (to_lower, to_upper)
         } else {

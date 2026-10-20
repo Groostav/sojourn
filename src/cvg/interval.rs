@@ -700,40 +700,43 @@ mod tests {
         let fixtures: [(Vec<InputVariable>, &[&str]); 5] = [
             (
                 vec![
-                    InputVariable::new("x1", -10.0, 10.0),
-                    InputVariable::new("x2", -10.0, 10.0),
+                    InputVariable::new_continuous("x1", -10.0, 10.0),
+                    InputVariable::new_continuous("x2", -10.0, 10.0),
                 ],
                 &["x1 + x2 == 3 +/- 0.1"],
             ),
             (
                 vec![
-                    InputVariable::new("x1", -10.0, 10.0),
-                    InputVariable::new("x2", -10.0, 10.0),
+                    InputVariable::new_continuous("x1", -10.0, 10.0),
+                    InputVariable::new_continuous("x2", -10.0, 10.0),
                 ],
                 &["x1 + x2 < 3", "x1 - x2 > -4"],
             ),
             (
                 vec![
-                    InputVariable::new("x1", 0.5, 10.0),
-                    InputVariable::new("x2", 0.5, 10.0),
+                    InputVariable::new_continuous("x1", 0.5, 10.0),
+                    InputVariable::new_continuous("x2", 0.5, 10.0),
                 ],
                 &["x1 / x2 < 4", "ln(x1) < 2"],
             ),
             (
                 vec![
-                    InputVariable::new("x1", -10.0, 10.0),
-                    InputVariable::new("x2", -10.0, 10.0),
+                    InputVariable::new_continuous("x1", -10.0, 10.0),
+                    InputVariable::new_continuous("x2", -10.0, 10.0),
                 ],
                 &["x1 * x2 == 6 +/- 0.5"],
             ),
-            (vec![InputVariable::new("x1", 10.0, 11.0)], &["x1 > 10.5"]),
+            (
+                vec![InputVariable::new_continuous("x1", 10.0, 11.0)],
+                &["x1 > 10.5"],
+            ),
         ];
 
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x0051_1CE5);
         for (inputs, sources) in fixtures {
             let bounds: Vec<(f64, f64)> = inputs
                 .iter()
-                .map(|input| (input.lower_bound, input.upper_bound))
+                .map(|input| (input.lower(), input.upper()))
                 .collect();
             let system = system(inputs, sources);
 
@@ -784,13 +787,13 @@ mod tests {
     #[test]
     fn a_slice_is_never_wider_than_the_band_its_equality_defines() {
         let inputs = vec![
-            InputVariable::new("x", -4.0, 4.0),
-            InputVariable::new("y", -8.0, 8.0),
-            InputVariable::new("z", -8.0, 8.0),
+            InputVariable::new_continuous("x", -4.0, 4.0),
+            InputVariable::new_continuous("y", -8.0, 8.0),
+            InputVariable::new_continuous("z", -8.0, 8.0),
         ];
         let bounds: Vec<(f64, f64)> = inputs
             .iter()
-            .map(|input| (input.lower_bound, input.upper_bound))
+            .map(|input| (input.lower(), input.upper()))
             .collect();
         let system = system(inputs, &["y == sin(x) +/- 0.05", "z == y + 1 +/- 0.05"]);
 

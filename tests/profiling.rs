@@ -48,7 +48,7 @@ fn a_design_on_the_100_segment_beam() -> anyhow::Result<()> {
 #[ignore = "a profiling target, not a check"]
 fn a_design_on_the_99_equation_chain() -> anyhow::Result<()> {
     let variables: Vec<InputVariable> = (1..=100)
-        .map(|i| InputVariable::new(format!("x{i}"), 0.0, 1.0))
+        .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 1.0))
         .collect();
     let sources: Vec<String> = (1..100)
         .map(|i| format!("x{i} + x{} == 1 +/- 0.000001", i + 1))

@@ -202,7 +202,7 @@ impl Family {
 fn inputs() -> Vec<InputVariable> {
     VARIABLES
         .iter()
-        .map(|name| InputVariable::new(*name, 0.0, 1.0))
+        .map(|name| InputVariable::new_continuous(*name, 0.0, 1.0))
         .collect()
 }
 

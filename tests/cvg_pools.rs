@@ -44,7 +44,7 @@ fn system(variables: Vec<InputVariable>, constraints: &[&str]) -> anyhow::Result
 fn variables(specs: &[(&str, f64, f64)]) -> Vec<InputVariable> {
     specs
         .iter()
-        .map(|(name, low, high)| InputVariable::new(*name, *low, *high))
+        .map(|(name, low, high)| InputVariable::new_continuous(*name, *low, *high))
         .collect()
 }
 
@@ -88,8 +88,8 @@ fn assert_ten_feasible(system: &ConstraintSystem, sources: &[&str], points: &[Ve
                 variable.contains(*value),
                 "{} = {value} is outside {}..={}",
                 variable.name,
-                variable.lower_bound,
-                variable.upper_bound
+                variable.lower(),
+                variable.upper()
             );
         }
         let bindings: Vec<(&str, f64)> = system
@@ -141,8 +141,8 @@ fn assert_ten_feasible(system: &ConstraintSystem, sources: &[&str], points: &[Ve
 fn a_constraint_nothing_can_reason_about_still_yields_points_and_says_so() -> anyhow::Result<()> {
     let source = "y == sin(x) +/- 0.000001";
     let inputs = vec![
-        InputVariable::new("x", -1.0, 1.0),
-        InputVariable::new("y", -1.0, 1.0),
+        InputVariable::new_continuous("x", -1.0, 1.0),
+        InputVariable::new_continuous("y", -1.0, 1.0),
     ];
 
     let pool = ConstraintSolver::new()
@@ -180,7 +180,10 @@ fn a_constraint_nothing_can_reason_about_still_yields_points_and_says_so() -> an
 /// is real either way — the error is about count, not feasibility.
 #[test]
 fn a_region_that_is_one_point_designs_one_point_and_says_so() -> anyhow::Result<()> {
-    let system = system(vec![InputVariable::new("x1", 3.0, 3.0)], &["x1 > 0"])?;
+    let system = system(
+        vec![InputVariable::new_continuous("x1", 3.0, 3.0)],
+        &["x1 > 0"],
+    )?;
     let region = ConstraintSolver::new()
         .with_proposal_budget(common::PROPOSAL_BUDGET)
         .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED))?;
@@ -254,7 +257,7 @@ fn a_design_smaller_than_the_dimension_is_still_a_design() -> anyhow::Result<()>
     let names: Vec<String> = (1..=20).map(|i| format!("x{i}")).collect();
     let inputs: Vec<InputVariable> = names
         .iter()
-        .map(|name| InputVariable::new(name.clone(), -1.0, 1.0))
+        .map(|name| InputVariable::new_continuous(name.clone(), -1.0, 1.0))
         .collect();
     let sources = &["x1 + x2 + x3 + x4 + x5 < 1", "x6 * x7 > -0.5"];
     let system = system(inputs, sources)?;
@@ -324,8 +327,8 @@ fn the_same_generator_state_designs_the_same_points() -> anyhow::Result<()> {
             .solve(
                 &system(
                     vec![
-                        InputVariable::new("x1", 0.0, 10.0),
-                        InputVariable::new("x2", 0.0, 10.0),
+                        InputVariable::new_continuous("x1", 0.0, 10.0),
+                        InputVariable::new_continuous("x2", 0.0, 10.0),
                     ],
                     &["x1 < x2"],
                 )?,
@@ -397,7 +400,7 @@ fn contradictory_constraints_are_reported_as_unsatisfiable() -> anyhow::Result<(
         .with_proposal_budget(common::PROPOSAL_BUDGET)
         .solve(
             &system(
-                vec![InputVariable::new("x", 0.0, 10.0)],
+                vec![InputVariable::new_continuous("x", 0.0, 10.0)],
                 &["x > 8", "x < 2"],
             )?,
             &mut Xoshiro256PlusPlus::seed_from_u64(SEED),
@@ -434,8 +437,8 @@ fn contradictory_constraints_are_reported_as_unsatisfiable() -> anyhow::Result<(
 fn a_backwards_comparison_is_blamed_together_with_what_it_contradicts() -> anyhow::Result<()> {
     let system = system(
         vec![
-            InputVariable::new("x1", 0.0, 10.0),
-            InputVariable::new("x2", 0.0, 10.0),
+            InputVariable::new_continuous("x1", 0.0, 10.0),
+            InputVariable::new_continuous("x2", 0.0, 10.0),
         ],
         &[
             "x1 < 3",
@@ -494,8 +497,8 @@ fn a_thin_contradiction_is_not_found_rather_than_proved() -> anyhow::Result<()> 
         .solve(
             &system(
                 vec![
-                    InputVariable::new("x", -1.0, 1.0),
-                    InputVariable::new("y", -1.0, 1.0),
+                    InputVariable::new_continuous("x", -1.0, 1.0),
+                    InputVariable::new_continuous("y", -1.0, 1.0),
                 ],
                 &["x + y <= 1", "x + y >= 1.000000001"],
             )?,
@@ -525,8 +528,8 @@ fn an_algebraic_contradiction_is_not_found_rather_than_proved() -> anyhow::Resul
         .solve(
             &system(
                 vec![
-                    InputVariable::new("x", -1.0, 1.0),
-                    InputVariable::new("y", -1.0, 1.0),
+                    InputVariable::new_continuous("x", -1.0, 1.0),
+                    InputVariable::new_continuous("y", -1.0, 1.0),
                 ],
                 &["x*x - 2*x*y + y*y < 0"],
             )?,
@@ -548,7 +551,7 @@ fn a_satisfiable_problem_is_not_blamed_on_anything() -> anyhow::Result<()> {
         .with_proposal_budget(common::PROPOSAL_BUDGET)
         .solve(
             &system(
-                vec![InputVariable::new("x", 0.0, 10.0)],
+                vec![InputVariable::new_continuous("x", 0.0, 10.0)],
                 &["x > 8", "x < 9"],
             )?,
             &mut Xoshiro256PlusPlus::seed_from_u64(SEED),

@@ -41,7 +41,7 @@ mod a_lucky_probe_must_not_strand_the_sampling_route {
 
     fn system() -> anyhow::Result<ConstraintSystem> {
         let inputs: Vec<InputVariable> = (1..=DIM)
-            .map(|i| InputVariable::new(format!("x{i}"), -HALF_WIDTH, HALF_WIDTH))
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), -HALF_WIDTH, HALF_WIDTH))
             .collect();
         Ok(ConstraintSystem::new(inputs, [SLAB])?)
     }
@@ -124,7 +124,7 @@ mod repair_lands_too_close_at_a_vertex {
             .iter()
             .zip(LO)
             .zip(HI)
-            .map(|((n, lo), hi)| InputVariable::new(*n, lo, hi))
+            .map(|((n, lo), hi)| InputVariable::new_continuous(*n, lo, hi))
             .collect();
         Ok(ConstraintSystem::new(
             vars,
@@ -401,7 +401,7 @@ mod repair_lands_axis_aligned_not_nearest {
 
     fn system(n: usize, lo: f64, hi: f64, sources: &[String]) -> anyhow::Result<ConstraintSystem> {
         let variables = (1..=n)
-            .map(|i| InputVariable::new(format!("x{i}"), lo, hi))
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), lo, hi))
             .collect();
         Ok(ConstraintSystem::new(variables, sources.iter().cloned())?)
     }
@@ -650,7 +650,7 @@ mod repair_strands_on_a_product_constraint {
 
     fn keane(n: usize) -> anyhow::Result<ConstraintSystem> {
         let variables = (1..=n)
-            .map(|i| InputVariable::new(format!("x{i}"), 0.0, 10.0))
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 10.0))
             .collect();
         Ok(ConstraintSystem::new(
             variables,
@@ -908,7 +908,7 @@ mod a_wall_coordinate_in_no_constraint_stays_put {
 
     fn slab(n: usize) -> anyhow::Result<ConstraintSystem> {
         let variables = (1..=n)
-            .map(|i| InputVariable::new(format!("x{i}"), -10.0, 10.0))
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), -10.0, 10.0))
             .collect();
         Ok(ConstraintSystem::new(variables, ["x1 == x2 + 1 +/- 0.01"])?)
     }

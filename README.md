@@ -17,7 +17,7 @@ use sojourn::{ConstraintSystem, InputVariable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new("x", -2.0, 2.0), InputVariable::new("y", -2.0, 2.0)],
+        vec![InputVariable::new_continuous("x", -2.0, 2.0), InputVariable::new_continuous("y", -2.0, 2.0)],
         ["x^2 + y^2 < 1", "x + y > 0.5"],
     )?;
 
@@ -60,7 +60,7 @@ use sojourn::{ConstraintSystem, InputVariable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new("x1", 0.0, 10.0), InputVariable::new("x2", 0.0, 10.0)],
+        vec![InputVariable::new_continuous("x1", 0.0, 10.0), InputVariable::new_continuous("x2", 0.0, 10.0)],
         ["x1 < 3", "x2 > 5", "x1 + x2 < 20", "x1 > x2"], // that last one was meant to be `<`
     )?;
     let verdict = sojourn::solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(1)).unwrap_err();
@@ -88,7 +88,7 @@ use sojourn::{ConstraintSystem, InputVariable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new("x", -2.0, 2.0), InputVariable::new("y", -2.0, 2.0)],
+        vec![InputVariable::new_continuous("x", -2.0, 2.0), InputVariable::new_continuous("y", -2.0, 2.0)],
         ["x * y == 0 +/- 1.0e-9"], // a cross a few billionths wide
     )?;
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
@@ -124,8 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n = 100;
     let segment = 500.0 / n as f64;
     let mut variables: Vec<InputVariable> =
-        (1..=n).map(|i| InputVariable::new(format!("b{i}"), 1.0, 5.0)).collect();
-    variables.extend((1..=n).map(|i| InputVariable::new(format!("h{i}"), 5.0, 100.0)));
+        (1..=n).map(|i| InputVariable::new_continuous(format!("b{i}"), 1.0, 5.0)).collect();
+    variables.extend((1..=n).map(|i| InputVariable::new_continuous(format!("h{i}"), 5.0, 100.0)));
 
     let mut constraints = Vec::new();
     for i in 1..=n {

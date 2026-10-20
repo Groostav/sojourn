@@ -436,15 +436,17 @@ impl Sieve {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bounds = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("bounds"),
-                contents: &bytes_of_f32(problem.variables.iter().flat_map(|variable| {
-                    [narrow(variable.lower_bound), narrow(variable.upper_bound)]
-                })),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let bounds =
+            gpu.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bounds"),
+                    contents: &bytes_of_f32(
+                        problem.variables.iter().flat_map(|variable| {
+                            [narrow(variable.lower()), narrow(variable.upper())]
+                        }),
+                    ),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
         let survivors = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("survivors"),
             size: survivor_bytes,
@@ -763,7 +765,7 @@ mod tests {
 
     fn unit_cube() -> Vec<InputVariable> {
         (1..=3)
-            .map(|i| InputVariable::new(format!("x{i}"), 0.0, 1.0))
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 1.0))
             .collect()
     }
 
@@ -788,7 +790,7 @@ mod tests {
             ),
             (
                 "fault",
-                vec![InputVariable::new("x1", 0.0, 10.0)],
+                vec![InputVariable::new_continuous("x1", 0.0, 10.0)],
                 vec!["sqrt(x1 - 5) + x1 < 6"],
             ),
             ("ribbon", unit_cube(), vec!["x1 == x2 * x3 +/- 0.01"]),
@@ -806,10 +808,7 @@ mod tests {
     }
 
     fn candidates(inputs: &[InputVariable], count: usize, seed: u64) -> Mat<f64> {
-        let bounds: Vec<(f64, f64)> = inputs
-            .iter()
-            .map(|i| (i.lower_bound, i.upper_bound))
-            .collect();
+        let bounds: Vec<(f64, f64)> = inputs.iter().map(|i| (i.lower(), i.upper())).collect();
         let mut matrix = Mat::zeros(inputs.len(), count);
         fill_box(
             &mut matrix,
@@ -867,7 +866,7 @@ mod tests {
     /// Nothing the CPU would fault on survives: below five, `sqrt` is NaN.
     #[test]
     fn a_faulting_candidate_does_not_survive() {
-        let inputs = vec![InputVariable::new("x1", 0.0, 10.0)];
+        let inputs = vec![InputVariable::new_continuous("x1", 0.0, 10.0)];
         let problem = system(inputs.clone(), &["sqrt(x1 - 5) + x1 < 6"]);
         let sieve = sieve_or_skip!(problem);
         let batch = candidates(&inputs, 10_000, 3);
@@ -884,8 +883,8 @@ mod tests {
     #[test]
     fn an_out_of_range_gather_does_not_survive() {
         let inputs = vec![
-            InputVariable::new("x1", 0.0, 5.0),
-            InputVariable::new("x2", 0.0, 1.0),
+            InputVariable::new_continuous("x1", 0.0, 5.0),
+            InputVariable::new_continuous("x2", 0.0, 1.0),
         ];
         // `var[ceil(x1)]`: valid for x1 in (0, 2], out of range above.
         let problem = system(inputs.clone(), &["var[ceil(x1)] > -1"]);

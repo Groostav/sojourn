@@ -37,7 +37,7 @@ const POINT: [f64; 50] = [
 ];
 
 fn system() -> ConstraintSystem {
-    let vars = (1..=50).map(|i| InputVariable::new(format!("x{i}"), -10.0, 10.0)).collect();
+    let vars = (1..=50).map(|i| InputVariable::new_continuous(format!("x{i}"), -10.0, 10.0)).collect();
     ConstraintSystem::new(vars, ["x1 == x2 + 1 +/- 0.01"]).unwrap()
 }
 
@@ -72,7 +72,7 @@ async fn repair_lands_on_a_slab_with_room_to_spare() {
 #[pollster::test]
 async fn the_two_slab_variables_alone_repair_fine() {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new("x1", -10.0, 10.0), InputVariable::new("x2", -10.0, 10.0)],
+        vec![InputVariable::new_continuous("x1", -10.0, 10.0), InputVariable::new_continuous("x2", -10.0, 10.0)],
         ["x1 == x2 + 1 +/- 0.01"],
     )
     .unwrap();

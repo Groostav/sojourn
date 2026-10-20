@@ -154,7 +154,7 @@ impl RandomSampler {
     ) -> Self {
         let bounds = variables
             .iter()
-            .map(|variable| (variable.lower_bound, variable.upper_bound))
+            .map(|variable| (variable.lower(), variable.upper()))
             .collect();
         Self {
             rng,
@@ -465,7 +465,10 @@ mod brute_force_tests {
 
     /// Runs brute force on `x1 in 0..1` under `source`.
     fn search(source: &str, budget: u64, threads: usize) -> (Trial, usize) {
-        let problem = system(vec![InputVariable::new("x1", 0.0, 1.0)], &[source]);
+        let problem = system(
+            vec![InputVariable::new_continuous("x1", 0.0, 1.0)],
+            &[source],
+        );
         let mut sampler = RandomSampler::new(
             &problem.variables,
             Xoshiro256PlusPlus::seed_from_u64(SEED),

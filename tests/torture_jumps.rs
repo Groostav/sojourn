@@ -81,7 +81,7 @@ fn system(
 ) -> anyhow::Result<ConstraintSystem> {
     let variables = variables
         .iter()
-        .map(|(name, low, high)| InputVariable::new(*name, *low, *high))
+        .map(|(name, low, high)| InputVariable::new_continuous(*name, *low, *high))
         .collect();
     Ok(ConstraintSystem::new(
         variables,
@@ -100,7 +100,7 @@ fn per_coordinate(
     let variables: Vec<InputVariable> = names
         .iter()
         .enumerate()
-        .map(|(i, name)| InputVariable::new(name.clone(), offset(i), 10.0 + offset(i)))
+        .map(|(i, name)| InputVariable::new_continuous(name.clone(), offset(i), 10.0 + offset(i)))
         .collect();
     let sources: Vec<String> = shapes
         .iter()
@@ -130,7 +130,7 @@ fn in_box(system: &ConstraintSystem, point: &[f64]) -> bool {
         .variables()
         .iter()
         .zip(point)
-        .all(|(variable, value)| (variable.lower_bound..=variable.upper_bound).contains(value))
+        .all(|(variable, value)| (variable.lower()..=variable.upper()).contains(value))
 }
 
 /// The solver every fixture here starts from: the test-sized budget, the CPU
@@ -391,6 +391,9 @@ fn a_region_of_measure_zero_is_never_proved_empty() -> anyhow::Result<()> {
         Err(SampleError::Degenerate { found, wanted }) => {
             assert_eq!((found.ncols(), wanted), (1, 4));
             assert_all_hold(&system, &columns(&found));
+        }
+        Err(error @ SampleError::Exhausted { .. }) => {
+            panic!("a continuous region is never enumerated, so never exhausted: {error}")
         }
         Ok(design) => panic!(
             "a region of one point yielded a design of {}",

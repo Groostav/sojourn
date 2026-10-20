@@ -358,7 +358,7 @@ pub(crate) fn slice_conditioned(
     settled: Option<&[bool]>,
 ) -> Interval {
     let input = &system.variables[coordinate];
-    let mut interval = Interval::new(input.lower_bound, input.upper_bound);
+    let mut interval = Interval::new(input.lower(), input.upper());
     let mut frames = Frames::default();
 
     let coordinate = Row(coordinate);

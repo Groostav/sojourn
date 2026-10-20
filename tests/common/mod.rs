@@ -392,9 +392,9 @@ pub fn stepped_beam(n: usize) -> anyhow::Result<ConstraintSystem> {
     #[expect(clippy::cast_precision_loss, reason = "a segment count is small")]
     let l = L / n as f64;
     let mut vars: Vec<InputVariable> = (1..=n)
-        .map(|i| InputVariable::new(format!("b{i}"), 1.0, 5.0))
+        .map(|i| InputVariable::new_continuous(format!("b{i}"), 1.0, 5.0))
         .collect();
-    vars.extend((1..=n).map(|i| InputVariable::new(format!("h{i}"), 5.0, 100.0)));
+    vars.extend((1..=n).map(|i| InputVariable::new_continuous(format!("h{i}"), 5.0, 100.0)));
     let mut constraints = Vec::with_capacity(2 * n + 1);
     for i in 1..=n {
         #[expect(clippy::cast_precision_loss, reason = "a segment index is small")]

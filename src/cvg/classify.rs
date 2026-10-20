@@ -310,7 +310,7 @@ pub(crate) fn tightest(system: &ConstraintSystem, point: &Point) -> Vec<usize> {
         for driven in plan.driven().iter().copied() {
             let slice = hc4::slice_conditioned(system, point, driven, Some(&settled));
             let variable = &system.variables[driven];
-            let width = variable.upper_bound - variable.lower_bound;
+            let width = variable.upper() - variable.lower();
             score += if slice.is_empty() || width <= 0.0 {
                 1.0
             } else {
@@ -1076,8 +1076,8 @@ mod tests {
     fn the_tightest_plan_is_the_arm_the_point_is_on() {
         let system = crate::system::tests::system(
             vec![
-                crate::InputVariable::new("x1", -2.0, 2.0),
-                crate::InputVariable::new("x2", -2.0, 2.0),
+                crate::InputVariable::new_continuous("x1", -2.0, 2.0),
+                crate::InputVariable::new_continuous("x2", -2.0, 2.0),
             ],
             &["x1 * x2 == 0 +/- 0.000000001"],
         );

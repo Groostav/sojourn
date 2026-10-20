@@ -60,6 +60,7 @@ pub(crate) mod classify;
 #[cfg(feature = "gpu")]
 #[doc(hidden)]
 pub mod gpu;
+pub(crate) mod grid;
 pub(crate) mod hc4;
 pub(crate) mod incidence;
 pub(crate) mod interval;
@@ -582,7 +583,7 @@ pub(crate) fn widths(problem: &ConstraintSystem) -> Vec<f64> {
     problem
         .variables
         .iter()
-        .map(|variable| variable.upper_bound - variable.lower_bound)
+        .map(|variable| variable.upper() - variable.lower())
         .collect()
 }
 
@@ -613,8 +614,11 @@ mod tests {
     /// A region one millionth of its box: the probe misses, brute force
     /// lands a seed, the walker delivers from it.
     fn one_in_a_million() -> ConstraintSystem {
-        ConstraintSystem::new(vec![InputVariable::new("x1", 0.0, 1.0)], ["x1 > 0.999999"])
-            .expect("the fixture binds")
+        ConstraintSystem::new(
+            vec![InputVariable::new_continuous("x1", 0.0, 1.0)],
+            ["x1 > 0.999999"],
+        )
+        .expect("the fixture binds")
     }
 
     const SEED: u64 = 0x50_50_1E_5E_ED;
@@ -670,8 +674,8 @@ mod tests {
         // ten expected hits in the budget below.
         let opaque = ConstraintSystem::new(
             vec![
-                InputVariable::new("x1", 0.0, 1.0),
-                InputVariable::new("n", 1.0, 1.0),
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("n", 1.0, 1.0),
             ],
             ["var[floor(n)] > 0.99999"],
         )
@@ -712,9 +716,9 @@ mod tests {
     fn the_prune_budget_bounds_the_opening() {
         let hard = ConstraintSystem::new(
             vec![
-                InputVariable::new("x", 0.0, 100.0),
-                InputVariable::new("y", 0.0, 100.0),
-                InputVariable::new("z", 0.0, 100.0),
+                InputVariable::new_continuous("x", 0.0, 100.0),
+                InputVariable::new_continuous("y", 0.0, 100.0),
+                InputVariable::new_continuous("z", 0.0, 100.0),
             ],
             [
                 "floor(x) * floor(y) == floor(z) * 7 + 3 +/- 0.000000001",

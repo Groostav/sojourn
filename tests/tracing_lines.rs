@@ -20,8 +20,8 @@ fn a_cobyla_run_is_announced_before_it_runs_and_traced_as_it_goes() -> anyhow::R
 
     let system = ConstraintSystem::new(
         vec![
-            InputVariable::new("x", -1.0, 1.0),
-            InputVariable::new("y", -1.0, 1.0),
+            InputVariable::new_continuous("x", -1.0, 1.0),
+            InputVariable::new_continuous("y", -1.0, 1.0),
         ],
         ["x^2 + y^2 < 0.25"],
     )?;

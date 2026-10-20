@@ -189,7 +189,7 @@ pub(crate) fn contract(
     let declared: Vec<f64> = problem
         .variables
         .iter()
-        .map(|variable| variable.upper_bound - variable.lower_bound)
+        .map(|variable| variable.upper() - variable.lower())
         .collect();
 
     // A worklist with an "already waiting" flag, so a constraint is queued at
@@ -288,7 +288,7 @@ pub(crate) fn bisect(
     let declared: Vec<f64> = problem
         .variables
         .iter()
-        .map(|variable| variable.upper_bound - variable.lower_bound)
+        .map(|variable| variable.upper() - variable.lower())
         .collect();
     // The coordinate to split a box on: the widest relative to its declared
     // width, if that is wide enough to be worth splitting.
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn a_plain_contradiction_is_empty_and_blames_both_sides() {
         let system = system(
-            vec![InputVariable::new("x", 0.0, 10.0)],
+            vec![InputVariable::new_continuous("x", 0.0, 10.0)],
             &["x > 8", "x < 2"],
         );
         let (result, _) = contracted(&system);
@@ -435,8 +435,8 @@ mod tests {
     fn a_backwards_comparison_is_blamed_with_what_it_contradicts() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 10.0),
-                InputVariable::new("x2", 0.0, 10.0),
+                InputVariable::new_continuous("x1", 0.0, 10.0),
+                InputVariable::new_continuous("x2", 0.0, 10.0),
             ],
             &["x1 < 3", "x2 > 5", "x1 + x2 < 20", "x1 > x2"],
         );
@@ -494,7 +494,7 @@ mod tests {
         for (variables, sources, point) in cases {
             let inputs = variables
                 .iter()
-                .map(|(name, lo, hi)| InputVariable::new(*name, *lo, *hi))
+                .map(|(name, lo, hi)| InputVariable::new_continuous(*name, *lo, *hi))
                 .collect();
             let system = system(inputs, sources);
             let (result, _) = contracted(&system);
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn the_parabola_ribbon_leaves_one_settled_box_per_root() {
         let system = system(
-            vec![InputVariable::new("x", -5.0, 5.0)],
+            vec![InputVariable::new_continuous("x", -5.0, 5.0)],
             &["(x + 2) * (x - 1) == 0 +/- 0.000000001"],
         );
         let result = pruned(&system, 64);
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn the_absolute_value_leaves_one_settled_box_per_branch() {
         let system = system(
-            vec![InputVariable::new("x1", -2.0, 2.0)],
+            vec![InputVariable::new_continuous("x1", -2.0, 2.0)],
             &["abs(x1) == 1 +/- 0.000000001"],
         );
         let result = pruned(&system, 64);
@@ -572,8 +572,8 @@ mod tests {
     fn a_disc_inside_a_ring_beyond_it_is_proved_by_splitting() {
         let system = system(
             vec![
-                InputVariable::new("x", -1.5, 1.5),
-                InputVariable::new("y", -1.5, 1.5),
+                InputVariable::new_continuous("x", -1.5, 1.5),
+                InputVariable::new_continuous("y", -1.5, 1.5),
             ],
             &["x^2 + y^2 <= 1", "x^2 + y^2 >= 2"],
         );
@@ -596,8 +596,8 @@ mod tests {
         ] {
             let system = system(
                 vec![
-                    InputVariable::new("x", -1.0, 1.0),
-                    InputVariable::new("y", -1.0, 1.0),
+                    InputVariable::new_continuous("x", -1.0, 1.0),
+                    InputVariable::new_continuous("y", -1.0, 1.0),
                 ],
                 sources,
             );
@@ -626,8 +626,8 @@ mod tests {
     fn what_narrowed_nothing_is_unexpressed() {
         let subscripted = system(
             vec![
-                InputVariable::new("n", 1.0, 2.0),
-                InputVariable::new("x2", -10.0, 10.0),
+                InputVariable::new_continuous("n", 1.0, 2.0),
+                InputVariable::new_continuous("x2", -10.0, 10.0),
             ],
             &["var[floor(n)] < 4", "x2 < 3"],
         );
@@ -637,8 +637,8 @@ mod tests {
 
         let algebraic = system(
             vec![
-                InputVariable::new("x", -1.0, 1.0),
-                InputVariable::new("y", -1.0, 1.0),
+                InputVariable::new_continuous("x", -1.0, 1.0),
+                InputVariable::new_continuous("y", -1.0, 1.0),
             ],
             &["x*x - 2*x*y + y*y < 0"],
         );
@@ -653,8 +653,8 @@ mod tests {
     fn the_budget_bounds_the_contractions() {
         let system = system(
             vec![
-                InputVariable::new("x", -1.0, 1.0),
-                InputVariable::new("y", -1.0, 1.0),
+                InputVariable::new_continuous("x", -1.0, 1.0),
+                InputVariable::new_continuous("y", -1.0, 1.0),
             ],
             &["x*x - 2*x*y + y*y < 0"],
         );
@@ -683,9 +683,9 @@ mod tests {
     fn a_zeno_chain_terminates_live() {
         let system = system(
             vec![
-                InputVariable::new("x", 0.0, 1e6),
-                InputVariable::new("y", 0.0, 1e6),
-                InputVariable::new("z", 0.0, 1e6),
+                InputVariable::new_continuous("x", 0.0, 1e6),
+                InputVariable::new_continuous("y", 0.0, 1e6),
+                InputVariable::new_continuous("z", 0.0, 1e6),
             ],
             &["x >= y + 1", "y >= z + 1", "z >= x + 1"],
         );
@@ -698,8 +698,8 @@ mod tests {
     fn a_bisection_is_deterministic() {
         let system = system(
             vec![
-                InputVariable::new("x", -1.0, 1.0),
-                InputVariable::new("y", -1.0, 1.0),
+                InputVariable::new_continuous("x", -1.0, 1.0),
+                InputVariable::new_continuous("y", -1.0, 1.0),
             ],
             &["y == sin(x) +/- 0.000001"],
         );

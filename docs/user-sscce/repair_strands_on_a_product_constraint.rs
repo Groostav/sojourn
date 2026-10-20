@@ -62,7 +62,7 @@ const POINT_100: [f64; 100] = [
 ];
 
 fn keane(n: usize) -> ConstraintSystem {
-    let vars = (1..=n).map(|i| InputVariable::new(format!("x{i}"), 0.0, 10.0)).collect();
+    let vars = (1..=n).map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 10.0)).collect();
     ConstraintSystem::new(vars, [
         format!("0.75 - prod(1, {n}, i -> var[i]) < 0"),
         format!("sum(1, {n}, i -> var[i]) - {} < 0", 7.5 * n as f64),

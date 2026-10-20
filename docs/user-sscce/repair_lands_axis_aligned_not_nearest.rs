@@ -36,7 +36,7 @@ fn l2(a: &[f64], b: &[f64]) -> f64 {
 }
 
 fn system(n: usize, lo: f64, hi: f64, cs: &[&str]) -> ConstraintSystem {
-    let vars = (1..=n).map(|i| InputVariable::new(format!("x{i}"), lo, hi)).collect();
+    let vars = (1..=n).map(|i| InputVariable::new_continuous(format!("x{i}"), lo, hi)).collect();
     ConstraintSystem::new(vars, cs.iter().map(|s| s.to_string())).unwrap()
 }
 

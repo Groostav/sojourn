@@ -24,6 +24,7 @@
 use faer::MatRef;
 
 use crate::cvg::classify;
+use crate::cvg::grid::Grid;
 use crate::cvg::hc4::{self, IntervalTape};
 use crate::cvg::incidence::{ConstraintId, Incidence, Row};
 use crate::diagnostics::CompilationFailure;
@@ -38,27 +39,97 @@ use crate::{Ast, CompiledExpression, Schema};
 /// matrix wants, for when evaluation goes batched.
 pub type Point = Vec<f64>;
 
-/// One input variable and the range it may take.
+/// The values one input variable may take.
+///
+/// Ordinal only: a discrete domain is a set of numbers in order, and the
+/// constraints read those numbers. Categories with no order — `table`,
+/// `chair` — are the caller's to alias onto a lattice of indices, accepting
+/// that "nearest" and "spread" then read the index order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Domain {
+    /// Every value from `lower` to `upper`, inclusive.
+    Continuous { lower: f64, upper: f64 },
+    /// `lower`, `lower + step`, …, `upper`, and nothing between.
+    ///
+    /// Read as the decimals written: the levels of `{0, 0.1, 1}` are the
+    /// literals `0.0, 0.1, …, 1.0`, bit for bit, not the accumulated
+    /// `0.1 * 3 == 0.30000000000000004`. A step that is no short decimal
+    /// (`1.0 / 3.0`) cannot be held that way and is refused in favour of
+    /// [`Levels`](Self::Levels).
+    Stepped { lower: f64, step: f64, upper: f64 },
+    /// Exactly these values: finite, strictly ascending, at least one.
+    Levels(Vec<f64>),
+}
+
+/// One input variable and the values it may take.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputVariable {
     pub name: String,
-    pub lower_bound: f64,
-    pub upper_bound: f64,
+    pub domain: Domain,
 }
 
 impl InputVariable {
     #[must_use]
-    pub fn new(name: impl Into<String>, lower_bound: f64, upper_bound: f64) -> Self {
+    pub fn new(name: impl Into<String>, domain: Domain) -> Self {
         Self {
             name: name.into(),
-            lower_bound,
-            upper_bound,
+            domain,
         }
     }
 
+    /// A variable that may take any value in `[lower, upper]`.
+    #[must_use]
+    pub fn new_continuous(name: impl Into<String>, lower: f64, upper: f64) -> Self {
+        Self::new(name, Domain::Continuous { lower, upper })
+    }
+
+    /// A variable that may take `lower`, `lower + step`, …, `upper`; see
+    /// [`Domain::Stepped`].
+    #[must_use]
+    pub fn new_discrete(name: impl Into<String>, lower: f64, step: f64, upper: f64) -> Self {
+        Self::new(name, Domain::Stepped { lower, step, upper })
+    }
+
+    /// The least value the variable may take.
+    ///
+    /// # Panics
+    /// If it declares an empty list of levels.
+    #[must_use]
+    pub fn lower(&self) -> f64 {
+        match &self.domain {
+            Domain::Continuous { lower, .. } | Domain::Stepped { lower, .. } => *lower,
+            Domain::Levels(levels) => *levels
+                .first()
+                .unwrap_or_else(|| panic!("variable {:?} has no levels", self.name)),
+        }
+    }
+
+    /// The greatest value the variable may take.
+    ///
+    /// # Panics
+    /// If it declares an empty list of levels.
+    #[must_use]
+    pub fn upper(&self) -> f64 {
+        match &self.domain {
+            Domain::Continuous { upper, .. } | Domain::Stepped { upper, .. } => *upper,
+            Domain::Levels(levels) => *levels
+                .last()
+                .unwrap_or_else(|| panic!("variable {:?} has no levels", self.name)),
+        }
+    }
+
+    /// Whether the variable may take `value`: inside its bounds, and for a
+    /// discrete domain exactly on a level.
+    ///
+    /// Validates the domain on every call, so it is for a caller's
+    /// occasional question; the engine asks a [`ConstraintSystem`], which
+    /// validated once.
+    ///
+    /// # Panics
+    /// If the domain is ill-formed, as [`ConstraintSystem::new`] would.
     #[must_use]
     pub fn contains(&self, value: f64) -> bool {
-        (self.lower_bound..=self.upper_bound).contains(&value)
+        Grid::of(self).contains(value)
     }
 }
 
@@ -107,13 +178,15 @@ impl Constraint {
     /// value: `<= 0` is satisfied, and a residual that cannot be evaluated is
     /// not a pass. The neighbours are along the constraint's own variables
     /// only, because moving any other coordinate leaves its residual where it
-    /// was. `neighbour` is scratch the caller lends, equal to `point` on entry
-    /// and on return, so a system-wide check allocates once.
+    /// was. A discrete coordinate has no neighbours: a step off a level is
+    /// off the domain, not toward a wall. `neighbour` is scratch the caller
+    /// lends, equal to `point` on entry and on return, so a system-wide check
+    /// allocates once.
     pub(crate) fn holds(
         &self,
         point: &[f64],
         rows: &[Row],
-        variables: &[InputVariable],
+        grids: &[Grid],
         clearance: f64,
         neighbour: &mut [f64],
     ) -> bool {
@@ -131,8 +204,10 @@ impl Constraint {
         }
         for row in rows {
             let coordinate = row.index();
-            let variable = &variables[coordinate];
-            let step = clearance * (variable.upper_bound - variable.lower_bound);
+            let step = match grids[coordinate] {
+                Grid::Continuous { lower, upper } => clearance * (upper - lower),
+                Grid::Discrete(_) => continue,
+            };
             if step <= 0.0 {
                 continue;
             }
@@ -163,6 +238,10 @@ impl Constraint {
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem {
     pub(crate) variables: Vec<InputVariable>,
+    /// What each variable may take, derived from its domain and validated
+    /// once, in the same order: what every judgement and draw reads, so no
+    /// hot path re-derives a lattice.
+    pub(crate) grids: Vec<Grid>,
     /// Every constraint as written and as compiled, at construction. Compiling
     /// is how a constraint is proved to bind, so the tape is kept rather than
     /// made again.
@@ -250,21 +329,22 @@ impl ConstraintSystem {
     /// # Panics
     /// If a variable is named with anything but a legal Babel variable name
     /// ([`is_legal_variable_name`](crate::is_legal_variable_name)), repeats an
-    /// earlier variable's name, or ranges over bounds that are not finite with
-    /// the lower not above the upper. Equal bounds are fine: they fix the
-    /// variable. These are the caller's to check, not verdicts about the
-    /// system, and without them the answers are wrong rather than refused:
-    /// inverted bounds read as proved infeasible, blaming a constraint.
+    /// earlier variable's name, or declares an ill-formed [`Domain`]: bounds
+    /// that are not finite or have the lower above the upper; a step that is
+    /// not positive and finite, does not land on the upper bound, or is too
+    /// fine to hold exactly (see [`Domain::Stepped`]); levels that are empty,
+    /// not finite or not strictly ascending. Equal bounds and a single level
+    /// are fine: they fix the variable. These are the caller's to check, not
+    /// verdicts about the system, and without them the answers are wrong
+    /// rather than refused: inverted bounds read as proved infeasible,
+    /// blaming a constraint.
     pub fn new<S: Into<String>>(
         variables: Vec<InputVariable>,
         constraints: impl IntoIterator<Item = S>,
     ) -> Result<Self, SystemError> {
+        let mut grids = Vec::with_capacity(variables.len());
         for (index, variable) in variables.iter().enumerate() {
-            let InputVariable {
-                name,
-                lower_bound,
-                upper_bound,
-            } = variable;
+            let name = &variable.name;
             assert!(
                 crate::is_legal_variable_name(name),
                 "variable {index} is named {name:?}, which is not a legal variable name"
@@ -275,14 +355,7 @@ impl ConstraintSystem {
                     .all(|earlier| earlier.name != *name),
                 "variable {index} repeats the name {name:?}"
             );
-            assert!(
-                lower_bound.is_finite() && upper_bound.is_finite(),
-                "variable {name:?} ranges over [{lower_bound}, {upper_bound}]; bounds must be finite"
-            );
-            assert!(
-                lower_bound <= upper_bound,
-                "variable {name:?} has lower bound {lower_bound} above its upper bound {upper_bound}"
-            );
+            grids.push(Grid::of(variable));
         }
         let schema = Schema::new(variables.iter().map(|input| input.name.clone()));
 
@@ -376,6 +449,7 @@ impl ConstraintSystem {
 
         Ok(Self {
             variables,
+            grids,
             constraints,
             plans,
             incidence,
@@ -443,21 +517,24 @@ impl ConstraintSystem {
             .enumerate()
             .all(|(index, constraint)| {
                 let rows = self.incidence.rows_of(ConstraintId(index));
-                constraint.holds(point, rows, &self.variables, clearance, &mut neighbour)
+                constraint.holds(point, rows, &self.grids, clearance, &mut neighbour)
             })
     }
 
     /// Whether `point[coordinate]` is inside its bounds with `clearance` box
     /// widths to spare on each side; a zero-width coordinate is judged on
-    /// containment alone.
+    /// containment alone, and so is a discrete one, which has a level or not.
     pub(crate) fn within(&self, point: &[f64], coordinate: usize, clearance: f64) -> bool {
-        let variable = &self.variables[coordinate];
+        let grid = &self.grids[coordinate];
         let value = point[coordinate];
-        let step = clearance * (variable.upper_bound - variable.lower_bound);
+        let step = match grid {
+            Grid::Continuous { lower, upper } => clearance * (upper - lower),
+            Grid::Discrete(_) => 0.0,
+        };
         if step > 0.0 {
-            variable.contains(value - step) && variable.contains(value + step)
+            grid.contains(value - step) && grid.contains(value + step)
         } else {
-            variable.contains(value)
+            grid.contains(value)
         }
     }
 
@@ -476,11 +553,9 @@ impl ConstraintSystem {
     /// The declared box, one interval per variable in row order: what a
     /// contraction starts from and a local solve's unit cube maps onto.
     pub(crate) fn declared(&self) -> Vec<crate::cvg::interval::Interval> {
-        self.variables
+        self.grids
             .iter()
-            .map(|variable| {
-                crate::cvg::interval::Interval::new(variable.lower_bound, variable.upper_bound)
-            })
+            .map(|grid| crate::cvg::interval::Interval::new(grid.lower(), grid.upper()))
             .collect()
     }
 
@@ -496,10 +571,10 @@ impl ConstraintSystem {
     pub fn worst_residual(&self, point: &[f64]) -> Option<f64> {
         let in_box = point.len() == self.variables.len()
             && self
-                .variables
+                .grids
                 .iter()
                 .zip(point)
-                .all(|(input, value)| input.contains(*value));
+                .all(|(grid, value)| grid.contains(*value));
         if !in_box {
             return None;
         }
@@ -527,10 +602,10 @@ impl ConstraintSystem {
 
         let mut pass: Vec<bool> = (0..columns)
             .map(|column| {
-                self.variables
+                self.grids
                     .iter()
                     .enumerate()
-                    .all(|(row, input)| input.contains(candidates[(row, column)]))
+                    .all(|(row, grid)| grid.contains(candidates[(row, column)]))
             })
             .collect();
 
@@ -571,8 +646,11 @@ pub(crate) mod tests {
     /// construction, and the refusal points at the name.
     #[test]
     fn an_unbound_name_in_a_constraint_points_at_it() {
-        let error = ConstraintSystem::new(vec![InputVariable::new("x1", 0.0, 1.0)], ["x1 < x9"])
-            .expect_err("x9 is not declared");
+        let error = ConstraintSystem::new(
+            vec![InputVariable::new_continuous("x1", 0.0, 1.0)],
+            ["x1 < x9"],
+        )
+        .expect_err("x9 is not declared");
 
         let SystemError::Unbound {
             constraint,
@@ -598,8 +676,8 @@ pub(crate) mod tests {
     fn a_subscript_past_the_box_points_at_it() {
         let error = ConstraintSystem::new(
             vec![
-                InputVariable::new("x1", 0.0, 1.0),
-                InputVariable::new("x2", 0.0, 1.0),
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("x2", 0.0, 1.0),
             ],
             ["x1 < var[3]"],
         )
@@ -625,7 +703,10 @@ pub(crate) mod tests {
     }
 
     fn one_variable(source: &str) -> ConstraintSystem {
-        system(vec![InputVariable::new("x1", 0.0, 10.0)], &[source])
+        system(
+            vec![InputVariable::new_continuous("x1", 0.0, 10.0)],
+            &[source],
+        )
     }
 
     /// Points as a matrix, one column each: the shape the batched judge takes.
@@ -642,8 +723,8 @@ pub(crate) mod tests {
     fn a_computed_subscript_is_never_skipped() {
         let system = system(
             vec![
-                InputVariable::new("n", 1.0, 2.0),
-                InputVariable::new("x2", -10.0, 10.0),
+                InputVariable::new_continuous("n", 1.0, 2.0),
+                InputVariable::new_continuous("x2", -10.0, 10.0),
             ],
             &["var[floor(n)] < 4", "x2 < 3"],
         );
@@ -670,8 +751,8 @@ pub(crate) mod tests {
     fn the_clearance_is_a_step_in_every_named_direction() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 1.0),
-                InputVariable::new("x2", 0.0, 1.0),
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("x2", 0.0, 1.0),
             ],
             &["x1 + x2 < 1"],
         );
@@ -725,8 +806,8 @@ pub(crate) mod tests {
     fn batched_judging_agrees_with_per_point_is_feasible() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 10.0),
-                InputVariable::new("x2", -5.0, 5.0),
+                InputVariable::new_continuous("x1", 0.0, 10.0),
+                InputVariable::new_continuous("x2", -5.0, 5.0),
             ],
             &["x1 > 4", "ln(x1) < 2", "x2 * x2 < 5"],
         );

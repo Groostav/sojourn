@@ -46,6 +46,20 @@ pub enum Infeasibility {
     /// emptied one depended on — so it is the constraints actually used
     /// rather than every one present.
     Proved { blamed: Vec<ConstraintRef> },
+    /// No point exists at any combination of the declared levels, though the
+    /// constraints can be met once the discrete variables may vary
+    /// continuously — `relaxed` is such a point, and `blamed` the
+    /// constraints the proof over the levels used.
+    ///
+    /// A variant of its own rather than [`Proved`](Self::Proved) because it
+    /// sends whoever reads it somewhere else: the formulation is fine, and it
+    /// is the step or the list of levels that misses the region. `relaxed` is
+    /// a point rather than an `Option` because without a continuous witness
+    /// nothing says the levels are the problem, and the answer is `Proved`.
+    BetweenLevels {
+        blamed: Vec<ConstraintRef>,
+        relaxed: Point,
+    },
     /// Sampling found nothing and nothing could be proved. **This is not a
     /// claim that the region is empty.**
     ///
@@ -75,6 +89,12 @@ impl std::fmt::Display for Infeasibility {
             Self::Proved { blamed } => write!(
                 f,
                 "no point satisfies these constraints together: {}",
+                listed(blamed)
+            ),
+            Self::BetweenLevels { blamed, relaxed } => write!(
+                f,
+                "these constraints can be met continuously, at {relaxed:?}, but at no \
+                 combination of the declared levels: {}",
                 listed(blamed)
             ),
             Self::NotFound { unexpressed } => {
@@ -275,7 +295,7 @@ impl Default for GpuTarget {
 /// ```no_run
 /// # use sojourn::{ConstraintSystem, InputVariable};
 /// # fn example() -> anyhow::Result<()> {
-/// let system = ConstraintSystem::new(vec![InputVariable::new("x", -1.0, 1.0)], ["x > 0"])?;
+/// let system = ConstraintSystem::new(vec![InputVariable::new_continuous("x", -1.0, 1.0)], ["x > 0"])?;
 ///
 /// let mut rng = rand::rng();
 /// let region = sojourn::solve(&system, &mut rng)?;
@@ -546,6 +566,19 @@ pub enum SampleError {
         found.ncols()
     )]
     Degenerate { found: Mat<f64>, wanted: usize },
+    /// The region has fewer feasible points than were asked for beyond the
+    /// caller's own, and `found` is every one of them: a system of discrete
+    /// variables alone, whose levels were enumerated.
+    ///
+    /// A proof where [`Degenerate`](Self::Degenerate) is a shrug: every
+    /// combination of levels was judged, so there is no other point to find.
+    /// Only a domain declared discrete counts as finite — a continuous one of
+    /// zero width is still `Degenerate`.
+    #[error(
+        "the region has {} feasible points beyond those given, not the {wanted} asked for; all of them are in the design",
+        found.ncols()
+    )]
+    Exhausted { found: Mat<f64>, wanted: usize },
 }
 
 /// A solved region: the system a search found feasible points in, and those
@@ -689,7 +722,7 @@ impl FeasibleRegion {
     /// ```no_run
     /// # use sojourn::{ConstraintSystem, InputVariable};
     /// # fn example() -> anyhow::Result<()> {
-    /// # let system = ConstraintSystem::new(vec![InputVariable::new("x", -1.0, 1.0)], ["x > 0"])?;
+    /// # let system = ConstraintSystem::new(vec![InputVariable::new_continuous("x", -1.0, 1.0)], ["x > 0"])?;
     /// # use rand::SeedableRng;
     /// let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(42);
     /// let region = sojourn::solve(&system, &mut rng)?;

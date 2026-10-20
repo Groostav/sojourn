@@ -7,7 +7,7 @@
 //!
 //! # fn example() -> anyhow::Result<()> {
 //! let system = ConstraintSystem::new(
-//!     vec![InputVariable::new("x", -2.0, 2.0), InputVariable::new("y", -2.0, 2.0)],
+//!     vec![InputVariable::new_continuous("x", -2.0, 2.0), InputVariable::new_continuous("y", -2.0, 2.0)],
 //!     ["x^2 + y^2 < 1", "x + y > 0.5"],
 //! )?;
 //!
@@ -124,7 +124,7 @@ pub use solve::{
     ConstraintSolver, DEFAULT_GPU_PROPOSAL_BUDGET, DEFAULT_PROPOSAL_BUDGET, DEFAULT_PRUNE_BUDGET,
     FeasibleRegion, GPU_VARIABLE, GpuTarget, Infeasibility, SampleError,
 };
-pub use system::{ConstraintRef, ConstraintSystem, InputVariable, Point, SystemError};
+pub use system::{ConstraintRef, ConstraintSystem, Domain, InputVariable, Point, SystemError};
 
 /// The `rand` this crate's `solve` and `sample` take their generator through,
 /// re-exported so a consumer on another `rand` need not match versions by

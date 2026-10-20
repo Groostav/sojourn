@@ -678,7 +678,7 @@ fn sampled(
                 .map(|((centre, width), variable)| {
                     let step = radius * width;
                     rng.random_range(centre - step..=centre + step)
-                        .clamp(variable.lower_bound, variable.upper_bound)
+                        .clamp(variable.lower(), variable.upper())
                 })
                 .collect();
             // Driven coordinates onto their surfaces, at the middle of the
@@ -856,13 +856,7 @@ fn landed(system: &ConstraintSystem, point: &Point, coordinate: usize, clearance
     let mut neighbour = point.clone();
     system.incidence.affected(Row(coordinate)).iter().all(|id| {
         let rows = system.incidence.rows_of(*id);
-        system.constraints[id.index()].holds(
-            point,
-            rows,
-            &system.variables,
-            clearance,
-            &mut neighbour,
-        )
+        system.constraints[id.index()].holds(point, rows, &system.grids, clearance, &mut neighbour)
     })
 }
 

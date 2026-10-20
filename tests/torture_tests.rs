@@ -37,7 +37,7 @@ fn system(
 ) -> anyhow::Result<ConstraintSystem> {
     let variables = variables
         .iter()
-        .map(|(name, low, high)| InputVariable::new(*name, *low, *high))
+        .map(|(name, low, high)| InputVariable::new_continuous(*name, *low, *high))
         .collect();
     Ok(ConstraintSystem::new(
         variables,
@@ -64,7 +64,7 @@ fn in_box(system: &ConstraintSystem, point: &[f64]) -> bool {
         .variables()
         .iter()
         .zip(point)
-        .all(|(variable, value)| (variable.lower_bound..=variable.upper_bound).contains(value))
+        .all(|(variable, value)| (variable.lower()..=variable.upper()).contains(value))
 }
 
 /// The solver every fixture here starts from: the test-sized budget, the CPU

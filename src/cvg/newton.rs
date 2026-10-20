@@ -153,12 +153,12 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
     let lower: Vec<f64> = system
         .variables
         .iter()
-        .map(|variable| variable.lower_bound)
+        .map(|variable| variable.lower())
         .collect();
     let width: Vec<f64> = system
         .variables
         .iter()
-        .map(|variable| variable.upper_bound - variable.lower_bound)
+        .map(|variable| variable.upper() - variable.lower())
         .collect();
     let normalised = |point: &[f64]| -> Vec<f64> {
         point
@@ -403,8 +403,8 @@ mod tests {
     fn a_half_space_lands_on_the_foot_of_the_normal() {
         let system = system(
             vec![
-                InputVariable::new("x1", -2.0, 2.0),
-                InputVariable::new("x2", -2.0, 2.0),
+                InputVariable::new_continuous("x1", -2.0, 2.0),
+                InputVariable::new_continuous("x2", -2.0, 2.0),
             ],
             &["2*x1 + x2 < 1"],
         );
@@ -425,8 +425,8 @@ mod tests {
     fn a_feasible_start_projects_a_target_with_no_gradient() {
         let system = system(
             vec![
-                InputVariable::new("x", 0.0, 4.0),
-                InputVariable::new("y", 0.0, 4.0),
+                InputVariable::new_continuous("x", 0.0, 4.0),
+                InputVariable::new_continuous("y", 0.0, 4.0),
             ],
             &["1 - x*y < 0"],
         );
@@ -455,7 +455,7 @@ mod tests {
     fn a_step_through_a_wall_stops_short_and_converges() {
         let system = system(
             (1..=4)
-                .map(|i| InputVariable::new(format!("x{i}"), 0.0, 4.0))
+                .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 4.0))
                 .collect::<Vec<InputVariable>>(),
             &["1 - prod(1, 4, i -> var[i]) < 0"],
         );
@@ -470,8 +470,8 @@ mod tests {
     fn a_disc_lands_radially() {
         let system = system(
             vec![
-                InputVariable::new("x", -2.0, 2.0),
-                InputVariable::new("y", -2.0, 2.0),
+                InputVariable::new_continuous("x", -2.0, 2.0),
+                InputVariable::new_continuous("y", -2.0, 2.0),
             ],
             &["x^2 + y^2 < 1"],
         );
@@ -490,8 +490,8 @@ mod tests {
     fn a_vertex_takes_both_constraints() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 1.0),
-                InputVariable::new("x2", 0.0, 1.0),
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("x2", 0.0, 1.0),
             ],
             &["x1 < 0.5", "x2 < 0.5"],
         );
@@ -507,8 +507,8 @@ mod tests {
     fn a_bound_joins_the_active_set() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 1.0),
-                InputVariable::new("x2", 0.0, 1.0),
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("x2", 0.0, 1.0),
             ],
             &["x1 + x2 < 0.2"],
         );
@@ -526,8 +526,8 @@ mod tests {
     fn a_negative_multiplier_drops_a_row() {
         let system = system(
             vec![
-                InputVariable::new("x1", -2.0, 2.0),
-                InputVariable::new("x2", -2.0, 2.0),
+                InputVariable::new_continuous("x1", -2.0, 2.0),
+                InputVariable::new_continuous("x2", -2.0, 2.0),
             ],
             // From (1.5, 1.5) both are violated; the projection onto the
             // first alone, (0.5, 0.5), satisfies the second (0.5 + 1 = 1.5 < 2)
@@ -546,8 +546,8 @@ mod tests {
     fn a_jump_in_the_active_set_declines() {
         let system = system(
             vec![
-                InputVariable::new("x1", 0.0, 10.0),
-                InputVariable::new("x2", 0.0, 10.0),
+                InputVariable::new_continuous("x1", 0.0, 10.0),
+                InputVariable::new_continuous("x2", 0.0, 10.0),
             ],
             &["floor(x1) < 3", "x2 < 1"],
         );
@@ -563,8 +563,8 @@ mod tests {
     fn a_projection_is_deterministic() {
         let system = system(
             vec![
-                InputVariable::new("x", -2.0, 2.0),
-                InputVariable::new("y", -2.0, 2.0),
+                InputVariable::new_continuous("x", -2.0, 2.0),
+                InputVariable::new_continuous("y", -2.0, 2.0),
             ],
             &["x^2 + y^2 < 1", "x + y > 0.5"],
         );

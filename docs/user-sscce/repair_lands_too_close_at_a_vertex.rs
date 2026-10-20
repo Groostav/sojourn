@@ -41,7 +41,7 @@ const CONSTRAINTS: [&str; 4] = [
 ];
 
 fn system() -> ConstraintSystem {
-    let vars = NAMES.iter().zip(LO).zip(HI).map(|((n, lo), hi)| InputVariable::new(*n, lo, hi)).collect();
+    let vars = NAMES.iter().zip(LO).zip(HI).map(|((n, lo), hi)| InputVariable::new_continuous(*n, lo, hi)).collect();
     ConstraintSystem::new(vars, CONSTRAINTS.iter().map(|s| s.to_string())).expect("the spring binds")
 }
 

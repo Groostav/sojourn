@@ -51,7 +51,7 @@ fn region(system: &ConstraintSystem) -> anyhow::Result<FeasibleRegion> {
 fn variables(specs: &[(&str, f64, f64)]) -> Vec<InputVariable> {
     specs
         .iter()
-        .map(|(name, low, high)| InputVariable::new(*name, *low, *high))
+        .map(|(name, low, high)| InputVariable::new_continuous(*name, *low, *high))
         .collect()
 }
 
@@ -90,7 +90,7 @@ fn has_clearance(system: &ConstraintSystem, point: &[f64], clearance: f64) -> bo
     }
     let mut neighbour = point.to_vec();
     for (coordinate, variable) in system.variables().iter().enumerate() {
-        let step = clearance * (variable.upper_bound - variable.lower_bound);
+        let step = clearance * (variable.upper() - variable.lower());
         for sign in [-1.0, 1.0] {
             neighbour[coordinate] = point[coordinate] + sign * step;
             if !holds(system, &neighbour) || !in_box(system, &neighbour) {
@@ -118,7 +118,7 @@ fn normalised_l2(system: &ConstraintSystem, a: &[f64], b: &[f64]) -> f64 {
         .iter()
         .zip(a.iter().zip(b))
         .map(|(variable, (x, y))| {
-            let scaled = (x - y) / (variable.upper_bound - variable.lower_bound);
+            let scaled = (x - y) / (variable.upper() - variable.lower());
             scaled * scaled
         })
         .sum::<f64>()
@@ -771,7 +771,7 @@ fn nearer_in_the_ball(
     let widths: Vec<f64> = system
         .variables()
         .iter()
-        .map(|variable| variable.upper_bound - variable.lower_bound)
+        .map(|variable| variable.upper() - variable.lower())
         .collect();
     let radius = normalised_l2(system, proposal, repaired);
 

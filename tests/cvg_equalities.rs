@@ -120,7 +120,7 @@ fn assert_explores(case: Case<'_>) {
     let inputs: Vec<InputVariable> = case
         .variables
         .iter()
-        .map(|(name, low, high)| InputVariable::new(*name, *low, *high))
+        .map(|(name, low, high)| InputVariable::new_continuous(*name, *low, *high))
         .collect();
     let system = ConstraintSystem::new(inputs.clone(), case.sources.iter().copied())
         .expect("a fixture's constraints should bind to its own box");
@@ -135,7 +135,9 @@ fn assert_explores(case: Case<'_>) {
         &mut Xoshiro256PlusPlus::seed_from_u64(SEED),
     ) {
         Ok(design) => design,
-        Err(SampleError::Degenerate { found, .. }) => found,
+        // Both are a short design carrying what there was; the count check
+        // below is what reads them.
+        Err(SampleError::Degenerate { found, .. } | SampleError::Exhausted { found, .. }) => found,
     };
     let points = columns(&design);
     let mut complaints: Vec<String> = Vec::new();
@@ -416,11 +418,11 @@ fn an_implicit_equality_is_refused_by_name() {
     ] {
         let error = ConstraintSystem::new(
             vec![
-                InputVariable::new("x", -2.0, 2.0),
-                InputVariable::new("x1", 0.0, 10.0),
-                InputVariable::new("x2", 0.0, 10.0),
-                InputVariable::new("x3", 0.0, 10.0),
-                InputVariable::new("x4", 1.0, 10.0),
+                InputVariable::new_continuous("x", -2.0, 2.0),
+                InputVariable::new_continuous("x1", 0.0, 10.0),
+                InputVariable::new_continuous("x2", 0.0, 10.0),
+                InputVariable::new_continuous("x3", 0.0, 10.0),
+                InputVariable::new_continuous("x4", 1.0, 10.0),
             ],
             [source],
         )
@@ -575,8 +577,8 @@ fn both_arms_of_a_product_receive_points() {
     const ON_THE_ARM: f64 = 1e-6;
 
     let inputs = vec![
-        InputVariable::new("x1", -2.0, 2.0),
-        InputVariable::new("x2", -2.0, 2.0),
+        InputVariable::new_continuous("x1", -2.0, 2.0),
+        InputVariable::new_continuous("x2", -2.0, 2.0),
     ];
     let system = ConstraintSystem::new(inputs, ["x1 * x2 == 0 +/- 0.000000001"])
         .expect("binds to its own box");
@@ -772,8 +774,8 @@ fn the_tolerance_floor_is_where_it_was_left() {
         // takes a `literal`, and `1e-1` is not one — the lexer stops at the `e`.
         let source = format!("x1 == x2 +/- {tolerance:.*}", exponent as usize);
         let inputs = vec![
-            InputVariable::new("x1", 0.0, 10.0),
-            InputVariable::new("x2", 0.0, 10.0),
+            InputVariable::new_continuous("x1", 0.0, 10.0),
+            InputVariable::new_continuous("x2", 0.0, 10.0),
         ];
         let system = ConstraintSystem::new(inputs.clone(), [source.as_str()])
             .expect("the fixture should bind to its own box");
@@ -792,7 +794,9 @@ fn the_tolerance_floor_is_where_it_was_left() {
             &mut Xoshiro256PlusPlus::seed_from_u64(SEED),
         ) {
             Ok(design) => design,
-            Err(SampleError::Degenerate { found, .. }) => found,
+            Err(SampleError::Degenerate { found, .. } | SampleError::Exhausted { found, .. }) => {
+                found
+            }
         };
         let points = columns(&design);
 

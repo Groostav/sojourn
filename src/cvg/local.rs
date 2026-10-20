@@ -344,10 +344,10 @@ impl CostFunction for &Landing<'_> {
         let worst = judged.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let inside = self
             .problem
-            .variables
+            .grids
             .iter()
             .zip(&candidate)
-            .all(|(variable, value)| variable.contains(*value));
+            .all(|(grid, value)| grid.contains(*value));
         if inside && worst <= 0.0 {
             let mut best = self.best.borrow_mut();
             if best.as_ref().is_none_or(|(deepest, _)| worst < *deepest) {
@@ -571,8 +571,8 @@ mod tests {
     fn a_half_space_is_seeded_from_the_centre() {
         let system = system(
             vec![
-                InputVariable::new("x1", -2.0, 2.0),
-                InputVariable::new("x2", -2.0, 2.0),
+                InputVariable::new_continuous("x1", -2.0, 2.0),
+                InputVariable::new_continuous("x2", -2.0, 2.0),
             ],
             &["2*x1 + x2 < -3"],
         );
@@ -585,8 +585,8 @@ mod tests {
     fn a_disc_off_centre_is_seeded() {
         let system = system(
             vec![
-                InputVariable::new("x", -3.0, 3.0),
-                InputVariable::new("y", -3.0, 3.0),
+                InputVariable::new_continuous("x", -3.0, 3.0),
+                InputVariable::new_continuous("y", -3.0, 3.0),
             ],
             &["sqr(x - 2) + sqr(y - 2) < 0.25"],
         );
@@ -602,8 +602,8 @@ mod tests {
     fn a_seed_over_a_sub_box_stays_in_it() {
         let system = system(
             vec![
-                InputVariable::new("x", -3.0, 3.0),
-                InputVariable::new("y", -3.0, 3.0),
+                InputVariable::new_continuous("x", -3.0, 3.0),
+                InputVariable::new_continuous("y", -3.0, 3.0),
             ],
             &["min(sqr(x - 2) + sqr(y - 2), sqr(x) + sqr(y)) < 0.25"],
         );
@@ -627,8 +627,8 @@ mod tests {
     fn a_disc_corner_projects_radially() {
         let system = system(
             vec![
-                InputVariable::new("x", -2.0, 2.0),
-                InputVariable::new("y", -2.0, 2.0),
+                InputVariable::new_continuous("x", -2.0, 2.0),
+                InputVariable::new_continuous("y", -2.0, 2.0),
             ],
             &["x^2 + y^2 < 1"],
         );
@@ -654,8 +654,8 @@ mod tests {
     fn a_half_space_projects_along_its_normal() {
         let system = system(
             vec![
-                InputVariable::new("x1", -2.0, 2.0),
-                InputVariable::new("x2", -2.0, 2.0),
+                InputVariable::new_continuous("x1", -2.0, 2.0),
+                InputVariable::new_continuous("x2", -2.0, 2.0),
             ],
             &["2*x1 + x2 < 1"],
         );
@@ -673,8 +673,8 @@ mod tests {
     fn a_projection_is_deterministic() {
         let system = system(
             vec![
-                InputVariable::new("x", -2.0, 2.0),
-                InputVariable::new("y", -2.0, 2.0),
+                InputVariable::new_continuous("x", -2.0, 2.0),
+                InputVariable::new_continuous("y", -2.0, 2.0),
             ],
             &["x^2 + y^2 < 1"],
         );
@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn an_empty_region_projects_to_nothing() {
         let system = system(
-            vec![InputVariable::new("x", 0.0, 10.0)],
+            vec![InputVariable::new_continuous("x", 0.0, 10.0)],
             &["x > 8", "x < 2"],
         );
         let projected = nearest(&system, &[5.0], &[5.0], 0.0);
@@ -703,7 +703,7 @@ mod tests {
         let names: Vec<String> = (1..=40).map(|i| format!("x{i}")).collect();
         let inputs = names
             .iter()
-            .map(|name| InputVariable::new(name.clone(), 10.0, 11.0))
+            .map(|name| InputVariable::new_continuous(name.clone(), 10.0, 11.0))
             .collect();
         let sources: Vec<String> = names.iter().map(|name| format!("{name} > 10.5")).collect();
         let sources: Vec<&str> = sources.iter().map(String::as_str).collect();
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn an_empty_region_is_not_seeded() {
         let system = system(
-            vec![InputVariable::new("x", 0.0, 10.0)],
+            vec![InputVariable::new_continuous("x", 0.0, 10.0)],
             &["x > 8", "x < 2"],
         );
         assert!(find_initial(&system, &system.declared(), STARTS, &mut rng()).is_none());
@@ -731,7 +731,10 @@ mod tests {
     fn a_faulting_constraint_still_seeds() {
         // `ln` of a negative faults; the fault is a residual the solver steps
         // away from, not an abort.
-        let system = system(vec![InputVariable::new("x", -1.0, 3.0)], &["ln(x) > 0"]);
+        let system = system(
+            vec![InputVariable::new_continuous("x", -1.0, 3.0)],
+            &["ln(x) > 0"],
+        );
         let point = find_initial(&system, &system.declared(), STARTS, &mut rng())
             .expect("the log's domain seeds");
         assert!(system.is_feasible(&point, 0.0), "{point:?}");
@@ -741,8 +744,8 @@ mod tests {
     fn the_same_seed_finds_the_same_point() {
         let system = system(
             vec![
-                InputVariable::new("x", -3.0, 3.0),
-                InputVariable::new("y", -3.0, 3.0),
+                InputVariable::new_continuous("x", -3.0, 3.0),
+                InputVariable::new_continuous("y", -3.0, 3.0),
             ],
             &["sqr(x - 2) + sqr(y - 2) < 0.25", "x + y > 3.9"],
         );

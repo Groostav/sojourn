@@ -798,10 +798,17 @@ impl FeasibleRegion {
     /// at twenty variables, a few seconds at two hundred for a pool of a
     /// hundred and fifty.
     ///
+    /// A system of discrete variables alone, whose lattice is small, is
+    /// enumerated rather than sampled: every point of it judged, and the
+    /// design chosen from all of those that pass.
+    ///
     /// # Errors
-    /// [`SampleError::Degenerate`] when the region has fewer than `count`
-    /// distinct points to give: it is a single point, or near enough to one
-    /// that the walk cannot leave it. The error carries what was found.
+    /// [`SampleError::Exhausted`] when that enumeration holds fewer than
+    /// `count` points beyond `existing`: they are all in the error.
+    /// [`SampleError::Degenerate`] when any other region has fewer than
+    /// `count` distinct points to give: it is a single point, or near enough
+    /// to one that the walk cannot leave it. Each error carries what was
+    /// found.
     ///
     /// # Panics
     /// If `existing` has columns but not one row per variable. That is a
@@ -824,7 +831,7 @@ impl FeasibleRegion {
         let anchors: Vec<Point> = (0..existing.ncols())
             .map(|column| (0..rows).map(|row| existing[(row, column)]).collect())
             .collect();
-        let chosen = cvg::design(
+        let cvg::Design { chosen, enumerated } = cvg::design(
             &self.system,
             &self.walker,
             &self.points,
@@ -834,9 +841,16 @@ impl FeasibleRegion {
         );
         let found = Mat::from_fn(rows, chosen.len(), |row, column| chosen[column][row]);
         if chosen.len() < count {
-            return Err(SampleError::Degenerate {
-                found,
-                wanted: count,
+            return Err(if enumerated {
+                SampleError::Exhausted {
+                    found,
+                    wanted: count,
+                }
+            } else {
+                SampleError::Degenerate {
+                    found,
+                    wanted: count,
+                }
             });
         }
         Ok(found)

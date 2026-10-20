@@ -163,6 +163,8 @@ use rand::RngExt;
 use rand::rngs::Xoshiro256PlusPlus;
 
 use crate::cvg::incidence::{ConstraintId, Row};
+use crate::cvg::prune::{self, Contracted};
+use crate::cvg::support::{Levels, VariableSupport};
 use crate::cvg::{classify, hc4, local, newton, normalised_distance as distance};
 use crate::{ConstraintSystem, Point};
 
@@ -210,6 +212,15 @@ const CHORD_BITS: usize = 60;
 /// shrinking stops finding nearer points at this many draws.
 const SAMPLING_ROUNDS: usize = 20;
 
+/// The most assignments of levels a repair runs its stages on, and the most
+/// levels of any one discrete variable it considers: a count, so a repair
+/// over many discrete variables ends where one over a few would. Sixty-four
+/// is every level of a small domain, and the nearest of a large one, far
+/// past where a nearer landing is still to be found in practice — the
+/// search stops at the first assignment whose levels alone are farther
+/// than the best landing, which is usually the second.
+const LEVEL_SEARCH_BUDGET: usize = 64;
+
 /// Draws per round of the sampling box, judged one by one.
 const SAMPLING_DRAWS: usize = 256;
 
@@ -250,6 +261,25 @@ pub enum RepairError {
 /// contract — clearance, the guarantees, the errors and the panics — is
 /// documented on [`FeasibleRegion::repair`](crate::FeasibleRegion::repair),
 /// the only caller.
+///
+/// # Discrete variables: a search over levels
+///
+/// Every stage below moves coordinates continuously, and a level is not
+/// reached by moving continuously. So where the system has discrete
+/// variables the stages run on a *pinned* copy of it — every discrete
+/// variable's support narrowed to one level, which every stage already
+/// treats as a coordinate of no width that stays put — once per assignment
+/// of levels, nearest assignment first, and the answer is the nearest
+/// landing over all of them in the same metric, levels and all. That is
+/// pure distance: a level changes exactly when changing it lands nearer.
+///
+/// An assignment no farther from `point` in its discrete coordinates alone
+/// than the best landing so far is the only kind that can beat it, so the
+/// search stops at the first one that is not; [`LEVEL_SEARCH_BUDGET`]
+/// bounds it otherwise. One whose pinned box contracts to nothing is ruled
+/// out without spending a repair on it, and does not count. The reference's
+/// own levels are tried last if nothing landed, since its assignment has a
+/// feasible point by construction.
 pub(crate) fn repair(
     system: &ConstraintSystem,
     reference: &[f64],
@@ -268,6 +298,220 @@ pub(crate) fn repair(
         "a clearance is a non-negative fraction of the box width, not {clearance}"
     );
 
+    let discrete: Vec<(usize, &Levels)> = system
+        .supports
+        .iter()
+        .enumerate()
+        .filter_map(|(row, support)| match support {
+            VariableSupport::Continuous { .. } => None,
+            VariableSupport::Discrete(levels) => Some((row, levels)),
+        })
+        .collect();
+    if discrete.is_empty() {
+        return repair_continuous(system, Some(reference), point, clearance, stream);
+    }
+
+    let _span = tracing::debug_span!("levels", discrete = discrete.len()).entered();
+    let widths = crate::cvg::widths(system);
+    // Per discrete row, its levels nearest `point` first: outward from the
+    // nearest, never more than the search could visit, so a lattice of a
+    // million levels is never listed.
+    let candidates: Vec<Vec<(f64, f64)>> = discrete
+        .iter()
+        .map(|(row, levels)| {
+            let value = point[*row];
+            let far = |level: f64| {
+                if widths[*row] > 0.0 {
+                    ((level - value) / widths[*row]).powi(2)
+                } else {
+                    0.0
+                }
+            };
+            // `below..above` is what has been taken: the nearest level, then
+            // whichever neighbour of that run is nearer, each time.
+            let nearest = levels.nearest(value);
+            let (mut below, mut above) = (nearest, nearest + 1);
+            let mut ordered = vec![(levels.level(nearest), far(levels.level(nearest)))];
+            while ordered.len() < LEVEL_SEARCH_BUDGET {
+                let down = (below > 0).then(|| levels.level(below - 1));
+                let up = (above < levels.count()).then(|| levels.level(above));
+                let level = match (down, up) {
+                    (Some(down), Some(up)) if far(down) <= far(up) => {
+                        below -= 1;
+                        down
+                    }
+                    (Some(down), None) => {
+                        below -= 1;
+                        down
+                    }
+                    (_, Some(up)) => {
+                        above += 1;
+                        up
+                    }
+                    (None, None) => break,
+                };
+                ordered.push((level, far(level)));
+            }
+            ordered
+        })
+        .collect();
+
+    // One assignment: the point and the reference with the discrete rows
+    // set to it, repaired on the system pinned there.
+    let attempt = |assignment: &[f64]| -> Option<Result<Point, RepairError>> {
+        let pins: Vec<(usize, f64)> = discrete
+            .iter()
+            .map(|(row, _)| *row)
+            .zip(assignment.iter().copied())
+            .collect();
+        let pinned = system.pinned(&pins);
+        let mut contributed = vec![false; pinned.constraints.len()];
+        if let Contracted::Empty { .. } =
+            prune::contract(&pinned, prune::Node::declared(&pinned), &mut contributed)
+        {
+            return None;
+        }
+        let mut at = point.to_vec();
+        let mut from = reference.to_vec();
+        for (row, level) in &pins {
+            at[*row] = *level;
+            from[*row] = *level;
+        }
+        if discrete.len() == dimensions {
+            // Nothing moves on a system pinned in every coordinate: the
+            // assignment is a point, and judging it is the whole repair.
+            return Some(if pinned.is_feasible(&at, clearance) {
+                Ok(at)
+            } else if pinned.is_feasible(&at, 0.0) {
+                Err(RepairError::Cramped {
+                    nearest: at,
+                    clearance,
+                })
+            } else {
+                Err(RepairError::Stranded)
+            });
+        }
+        // The reference walks in only where it is a point of this pinning;
+        // elsewhere its levels are not these and the chord would start from
+        // outside the region.
+        let reference = pinned.is_feasible(&from, 0.0).then_some(from.as_slice());
+        Some(repair_continuous(
+            &pinned,
+            reference,
+            &at,
+            clearance,
+            stream.clone(),
+        ))
+    };
+
+    let mut best: Option<(f64, Point)> = None;
+    let mut cramped: Option<(f64, Point)> = None;
+    let keep = |outcome: Result<Point, RepairError>,
+                best: &mut Option<(f64, Point)>,
+                cramped: &mut Option<(f64, Point)>| match outcome {
+        Ok(landed) => {
+            let at = distance(&widths, &landed, point);
+            nearer(best, at, landed);
+        }
+        Err(RepairError::Cramped { nearest, .. }) => {
+            let at = distance(&widths, &nearest, point);
+            nearer(cramped, at, nearest);
+        }
+        Err(RepairError::Stranded) => {}
+    };
+
+    // Best-first over the product of the per-row lists: the heap holds
+    // assignments by their discrete distance, an index per row into its list.
+    let squared = |indices: &[usize]| -> f64 {
+        indices
+            .iter()
+            .zip(&candidates)
+            .map(|(index, list)| list[*index].1)
+            .sum()
+    };
+    let start = vec![0; discrete.len()];
+    let mut frontier = std::collections::BinaryHeap::from([Ranked(squared(&start), start.clone())]);
+    let mut visited = std::collections::HashSet::from([start]);
+    let mut tried = 0;
+    while let Some(Ranked(discrete_squared, indices)) = frontier.pop() {
+        if best
+            .as_ref()
+            .is_some_and(|(nearest, _)| discrete_squared.sqrt() >= *nearest)
+            || tried >= LEVEL_SEARCH_BUDGET
+        {
+            break;
+        }
+        let assignment: Vec<f64> = indices
+            .iter()
+            .zip(&candidates)
+            .map(|(index, list)| list[*index].0)
+            .collect();
+        if let Some(outcome) = attempt(&assignment) {
+            tried += 1;
+            keep(outcome, &mut best, &mut cramped);
+        }
+        for row in 0..indices.len() {
+            if indices[row] + 1 < candidates[row].len() {
+                let mut next = indices.clone();
+                next[row] += 1;
+                if visited.insert(next.clone()) {
+                    frontier.push(Ranked(squared(&next), next));
+                }
+            }
+        }
+    }
+    if best.is_none() {
+        let own: Vec<f64> = discrete.iter().map(|(row, _)| reference[*row]).collect();
+        if let Some(outcome) = attempt(&own) {
+            keep(outcome, &mut best, &mut cramped);
+        }
+    }
+    tracing::debug!(tried, landed = best.is_some(), "searched the levels");
+
+    match (best, cramped) {
+        (Some((_, landed)), _) => Ok(landed),
+        (None, Some((_, nearest))) => Err(RepairError::Cramped { nearest, clearance }),
+        (None, None) => Err(RepairError::Stranded),
+    }
+}
+
+/// An assignment of levels in the search's frontier, ordered so that
+/// [`std::collections::BinaryHeap`] pops the nearest first: by its squared
+/// discrete distance, then by its indices, so the order is deterministic.
+#[derive(PartialEq)]
+struct Ranked(f64, Vec<usize>);
+
+impl Eq for Ranked {}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ranked {
+    // Reversed, because `BinaryHeap` is a max-heap.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .0
+            .total_cmp(&self.0)
+            .then_with(|| other.1.cmp(&self.1))
+    }
+}
+
+/// [`repair`] over continuous coordinates: every stage, on a system whose
+/// discrete coordinates — if it has any — are pinned to a level each, so
+/// that none of them moves. `reference` is a feasible point of `system` to
+/// walk in from, or `None` where there is none to hand, which skips the two
+/// stages that walk in from it.
+fn repair_continuous(
+    system: &ConstraintSystem,
+    reference: Option<&[f64]>,
+    point: &[f64],
+    clearance: f64,
+    stream: Xoshiro256PlusPlus,
+) -> Result<Point, RepairError> {
+    let dimensions = system.variables().len();
     let _span = tracing::debug_span!("repair", dimensions, clearance).entered();
     let current: Point = point.to_vec();
     if system.is_feasible(&current, clearance) {
@@ -358,7 +602,7 @@ pub(crate) fn repair(
     // find (`(x+2)(x-1) == 0` from 0.9, with the reference in the basin at
     // -2). Computed once, here or below, whichever asks first.
     let mut chord: Option<Point> = None;
-    if differentiable {
+    if differentiable && let Some(reference) = reference {
         let from = chord.insert(along_chord(system, reference, point));
         if let Some(landing) = newton::nearest(system, from, point)
             && let Some(landing) = stepped_inside(system, &widths, landing, point, clearance)
@@ -422,7 +666,9 @@ pub(crate) fn repair(
     // Nothing feasible seen at all: a constraint flat where the point
     // stands, which no slice, no linear model and no box around the point
     // can read. Walk in from the reference instead — see the module doc.
-    if landings.is_empty() {
+    if landings.is_empty()
+        && let Some(reference) = reference
+    {
         tracing::debug!(stage = "reference");
         let chord = chord.unwrap_or_else(|| along_chord(system, reference, point));
         landings.extend(
@@ -438,14 +684,17 @@ pub(crate) fn repair(
         );
         // The projection could not leave the chord's landing either — flat
         // again — so the landing itself, stepped off its walls, stands.
+        // Judged, as every landing is: the chord ends where the reference
+        // stands when no probe along it passed, and only a feasible
+        // reference makes that a feasible point.
         if !landings.iter().any(|(_, landing)| landing.is_clear()) {
-            landings.push((
-                "reference",
-                match clamped(system, &widths, chord.clone(), clearance) {
-                    Ok(clear) => Landing::Clear(clear),
-                    Err(_) => Landing::Feasible(chord),
-                },
-            ));
+            match clamped(system, &widths, chord.clone(), clearance) {
+                Ok(clear) => landings.push(("reference", Landing::Clear(clear))),
+                Err(_) if system.is_feasible(&chord, 0.0) => {
+                    landings.push(("reference", Landing::Feasible(chord)));
+                }
+                Err(_) => {}
+            }
         }
     }
 

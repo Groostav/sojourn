@@ -66,7 +66,7 @@ pub(crate) mod interval;
 pub(crate) mod local;
 pub(crate) mod newton;
 mod progress;
-mod prune;
+pub(crate) mod prune;
 pub(crate) mod sampling;
 #[cfg(feature = "gpu")]
 mod sieve;
@@ -81,6 +81,8 @@ use rand::rngs::Xoshiro256PlusPlus;
 use progress::{Progress, Trial};
 use sampling::RandomSampler;
 use walking::HitAndRunWalker;
+
+use support::VariableSupport;
 
 use crate::solve::{Budgets, Strategy};
 use crate::{ConstraintSystem, Point};
@@ -119,6 +121,21 @@ const POOL_FACTOR: usize = 2;
 
 /// See [`POOL_FACTOR`].
 const POOL_FLOOR: usize = 128;
+
+/// The most points a lattice may have for a design to judge every one of
+/// them rather than sample: a system of discrete variables alone, this
+/// small, has a pool that is the whole region, and a design that runs out
+/// of it has proved there is nothing more to give.
+///
+/// Sixty-five thousand: judged in batches through the tape, a few
+/// milliseconds; and farthest-first over a pool this size, which is
+/// `O(count · pool · dimensions)`, is still nothing next to a walk. A larger
+/// lattice is sampled and walked like any other region, and a shortfall
+/// there is a shrug.
+const ENUMERATION_LIMIT: usize = 1 << 16;
+
+/// Columns judged at once while enumerating a lattice.
+const ENUMERATION_BATCH: usize = 4096;
 
 /// The strategies, holding nothing but their streams and their knobs.
 ///
@@ -501,6 +518,13 @@ pub(crate) fn open(
 /// next choice would coincide with one already in the design, which a
 /// point-sized region reaches at once (the walker stays put, and emits the
 /// same point). Every point returned is feasible and judged here.
+///
+/// **A small lattice is enumerated instead.** Where every variable is
+/// discrete and the lattice holds at most [`ENUMERATION_LIMIT`] points, the
+/// pool is `held` and then every feasible point of it, each judged — no
+/// sampling and no walk, so `rng` is not drawn from. The pool is then the
+/// whole region, and a design that runs short of `count` has every point
+/// the region has, which [`Design::enumerated`] says.
 pub(crate) fn design(
     problem: &ConstraintSystem,
     walker: &HitAndRunWalker,
@@ -508,35 +532,81 @@ pub(crate) fn design(
     existing: &[Point],
     count: usize,
     mut rng: Xoshiro256PlusPlus,
-) -> Vec<Point> {
+) -> Design {
     let _span = tracing::debug_span!("design", count, existing = existing.len()).entered();
     if count == 0 || held.is_empty() {
-        return Vec::new();
+        return Design {
+            chosen: Vec::new(),
+            enumerated: false,
+        };
     }
-    let mut sampler = RandomSampler::new(
-        &problem.supports,
-        Xoshiro256PlusPlus::from_rng(&mut rng),
-        0,
-        1,
-        crate::solve::GpuTarget::Off,
-        0,
-    );
-    let mut walker = walker
-        .clone()
-        .reseeded(Xoshiro256PlusPlus::from_rng(&mut rng));
 
-    let wanted = count * POOL_FACTOR + POOL_FLOOR;
-    let mut pool: Vec<Point> = held.to_vec();
-    let trial = sampler.deliver(problem, wanted);
-    let sampled = trial.points.len();
-    pool.extend(trial.points);
-    let walked: Vec<Point> = walker
-        .extend(problem, &pool, wanted - sampled)
-        .into_iter()
-        .filter(|point| problem.is_feasible(point, 0.0))
+    // The levels of every row, when every row is discrete and there are few
+    // enough points to judge them all: the mixed radix the lattice is
+    // counted in. An overflowing product is a lattice too large, not a bug.
+    let radix: Option<Vec<&support::Levels>> = problem
+        .supports
+        .iter()
+        .map(|support| match support {
+            VariableSupport::Continuous { .. } => None,
+            VariableSupport::Discrete(levels) => Some(levels),
+        })
         .collect();
-    tracing::debug!(sampled, walked = walked.len(), "pooled");
-    pool.extend(walked);
+    let lattice = radix.and_then(|radix| {
+        let size = radix
+            .iter()
+            .try_fold(1_usize, |size, levels| size.checked_mul(levels.count()))?;
+        (size <= ENUMERATION_LIMIT).then_some((radix, size))
+    });
+
+    let mut pool: Vec<Point> = held.to_vec();
+    let enumerated = lattice.is_some();
+    if let Some((radix, size)) = lattice {
+        let bits =
+            |point: &Point| -> Vec<u64> { point.iter().map(|value| value.to_bits()).collect() };
+        let known: std::collections::HashSet<Vec<u64>> = held.iter().map(bits).collect();
+        for first in (0..size).step_by(ENUMERATION_BATCH) {
+            let columns = ENUMERATION_BATCH.min(size - first);
+            let batch = faer::Mat::from_fn(radix.len(), columns, |row, column| {
+                // Point `first + column` in mixed radix, the first row
+                // varying fastest.
+                let stride: usize = radix[..row].iter().map(|levels| levels.count()).product();
+                let k = (first + column) / stride % radix[row].count();
+                radix[row].level(k)
+            });
+            pool.extend(
+                problem
+                    .feasible_columns(batch.as_ref())
+                    .into_iter()
+                    .filter(|point| !known.contains(&bits(point))),
+            );
+        }
+        tracing::debug!(lattice = size, feasible = pool.len(), "enumerated");
+    } else {
+        let mut sampler = RandomSampler::new(
+            &problem.supports,
+            Xoshiro256PlusPlus::from_rng(&mut rng),
+            0,
+            1,
+            crate::solve::GpuTarget::Off,
+            0,
+        );
+        let mut walker = walker
+            .clone()
+            .reseeded(Xoshiro256PlusPlus::from_rng(&mut rng));
+
+        let wanted = count * POOL_FACTOR + POOL_FLOOR;
+        let trial = sampler.deliver(problem, wanted);
+        let sampled = trial.points.len();
+        pool.extend(trial.points);
+        let walked: Vec<Point> = walker
+            .extend(problem, &pool, wanted - sampled)
+            .into_iter()
+            .filter(|point| problem.is_feasible(point, 0.0))
+            .collect();
+        tracing::debug!(sampled, walked = walked.len(), "pooled");
+        pool.extend(walked);
+    }
 
     let widths = widths(problem);
     let mut nearest: Vec<f64> = pool
@@ -575,7 +645,15 @@ pub(crate) fn design(
         chosen.push(choice);
     }
     tracing::debug!(chosen = chosen.len(), pool = pool.len(), "designed");
-    chosen
+    Design { chosen, enumerated }
+}
+
+/// What [`design`] chose, and whether its pool was the whole region.
+pub(crate) struct Design {
+    pub(crate) chosen: Vec<Point>,
+    /// The pool was every feasible point of a lattice, so a design shorter
+    /// than asked holds every point the region has.
+    pub(crate) enumerated: bool,
 }
 
 /// Each variable's box width, the scale [`normalised_distance`] divides by.

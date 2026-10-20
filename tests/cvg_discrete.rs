@@ -572,6 +572,29 @@ fn an_off_level_point_is_repaired_onto_a_level() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// With nothing continuous to move, a repair is a search of the lattice
+/// alone: from `(1, 0)` the points with `n + m == 7` are `(7, 0)` at 0.6 of
+/// the box, `(4, 3)` at about 0.42 and `(3, 4)` at about 0.45 — the nearest
+/// is the answer, exactly, and the same every time.
+#[test]
+fn a_repair_of_discrete_variables_alone_is_the_nearest_lattice_point() -> anyhow::Result<()> {
+    let system = system(
+        vec![
+            InputVariable::new_discrete("n", 0.0, 1.0, 10.0),
+            InputVariable::new_discrete("m", 0.0, 1.0, 10.0),
+        ],
+        &["n + m == 7 +/- 0.1"],
+    )?;
+    let region = region(&system)?;
+
+    let repaired = region.repair(&[1.0, 0.0], 0.0)?;
+    let again = region.repair(&[1.0, 0.0], 0.0)?;
+
+    assert_eq!(repaired, vec![4.0, 3.0]);
+    assert_eq!(again, repaired);
+    Ok(())
+}
+
 // --- Determinism ------------------------------------------------------------
 
 /// The same generator state designs the same points, discrete draws and all.

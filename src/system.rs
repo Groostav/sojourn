@@ -481,6 +481,25 @@ impl ConstraintSystem {
             .expect("the same constraints over the same names bind as they did")
     }
 
+    /// This system with each `(row, value)` pinned: that variable's support
+    /// narrowed to the one value, which every stage of a repair treats as a
+    /// coordinate of no width that stays where it is. What repair's search
+    /// over levels runs its stages on, one assignment of levels at a time.
+    ///
+    /// The tapes, the plans and the incidence graph read no bound, so they
+    /// are cloned rather than rebuilt; `variables` keeps the caller's
+    /// declarations, for names.
+    pub(crate) fn pinned(&self, pins: &[(usize, f64)]) -> Self {
+        let mut pinned = self.clone();
+        for (row, value) in pins {
+            pinned.supports[*row] = VariableSupport::Continuous {
+                lower: *value,
+                upper: *value,
+            };
+        }
+        pinned
+    }
+
     #[must_use]
     pub fn variables(&self) -> &[InputVariable] {
         &self.variables

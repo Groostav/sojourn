@@ -409,8 +409,15 @@ fn brute_force_on_gpu(
         if survivors.is_empty() {
             continue;
         }
+        // A survivor is `f32`, and a level narrowed to `f32` is not the
+        // level: each discrete coordinate goes back to the nearest one before
+        // the exact judgement, which decides whatever the device thought.
         let matrix = Mat::from_fn(problem.variables().len(), survivors.len(), |row, column| {
-            survivors[column][row]
+            let value = survivors[column][row];
+            match &problem.supports[row] {
+                VariableSupport::Continuous { .. } => value,
+                VariableSupport::Discrete(levels) => levels.level(levels.nearest(value)),
+            }
         });
         let points = problem.feasible_columns(matrix.as_ref());
         tracing::debug!(

@@ -198,6 +198,45 @@ Euclidean distance; the same generator carried on gives the next design. Not
 a Latin hypercube — a design of fewer points than variables has no useful
 stratification.
 
+**A discrete variable takes its levels and nothing between them.** An
+`InputVariable` declares a `Domain`: `Continuous`, `Stepped` (a lattice), or
+`Levels` (a list). `ConstraintSystem::new` validates each one and derives its
+*support* (`cvg::support::VariableSupport`, the probabilist's word for the
+set of values a variable can take). The engine reads bounds and levels only
+from `ConstraintSystem::supports` and reads `variables` only for names, so a
+relaxed or pinned copy of a system differs from the original only in its
+supports. A lattice is decimal, with each level bit-equal to the literal
+(the module header says how), and one that can't be held that way is
+refused with a pointer to `Levels`. Every rung respects the levels without
+making them a special case:
+- **Sampling.** `fill` draws a level index, one stream value per row, so a
+  continuous system draws exactly what it always did.
+- **Driving.** `classify::plans` never drives a discrete position.
+- **Intervals.** `hc4` and `prune::contract` round each narrowing inward onto
+  levels, which is still a superset of the admissible values, and an
+  interval between two levels is empty, which is a proof.
+- **Bisection.** `bisect` splits between adjacent levels, and judges a box
+  narrowed to a single point, dying with blame when it fails, so a small
+  lattice is proved by enumeration.
+- **The walker.** It moves a discrete coordinate by a Gibbs draw over its
+  levels, with the plan's driven coordinates unsettled. Random directions
+  span the continuous coordinates only.
+- **The relaxation.** A proof over levels is re-opened as
+  `ConstraintSystem::relaxed`, and a continuous witness makes it
+  `Infeasibility::BetweenLevels`.
+- **Enumeration.** `design` enumerates an all-discrete lattice of at most
+  `ENUMERATION_LIMIT` points, and a shortfall there is
+  `SampleError::Exhausted`, a proof where `Degenerate` is a shrug.
+- **Repair.** `repair` searches assignments of levels nearest-first, each one
+  repaired on `ConstraintSystem::pinned` by the unchanged continuous stages,
+  so a level changes exactly when that lands nearer.
+- **The GPU.** The sieve draws levels from a table, and survivors are snapped
+  to the nearest level before the CPU judges them.
+
+Categories with no order are the caller's to alias onto an integer lattice;
+"nearest" and "spread" then read the index order. The measurements and
+decisions are in `docs/todo.md` under "Discrete variables".
+
 **An equality is read before it is searched.** `cvg::classify` reads
 `a == b +/- t` and answers what can be concluded: `Pinned`, `Driven`, `Implicit`
 or `Opaque`. A `Driven` variable is one the walker *computes* rather than

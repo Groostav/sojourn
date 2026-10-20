@@ -76,8 +76,18 @@ fn sieve_generated(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var x: array<f32, {{ n }}>;
     for (var i = 0u; i < N; i = i + 1u) {
+        // (lower, upper, count, offset): a count of zero is a continuous
+        // row, drawn over its bounds; otherwise a level, drawn by index from
+        // the row's stretch of the table.
         let b = bounds[i];
-        x[i] = b.x + draw(lane, i) * (b.y - b.x);
+        let u = draw(lane, i);
+        let count = bitcast<u32>(b.z);
+        if count == 0u {
+            x[i] = b.x + u * (b.y - b.x);
+        } else {
+            let k = min(u32(u * f32(count)), count - 1u);
+            x[i] = levels[bitcast<u32>(b.w) + k];
+        }
     }
     if residual(&x) <= 0.0 {
         keep(lane, &x);

@@ -110,6 +110,56 @@ tolerance band instead of searching for it. At the crossing, the walker's chains
 across both arms. A variable named on both sides (`a == b + a/2`) cannot be driven, and
 `ConstraintSystem::new` refuses it by name, giving the rearrangement (`a/2 - b == 0`).
 
+### Takes discrete variables, and says when the levels are the problem
+
+```rust
+use faer::Mat;
+use sojourn::rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
+use sojourn::{ConstraintSystem, Domain, InputVariable};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let system = ConstraintSystem::new(
+        vec![
+            InputVariable::new_discrete("bolts", 3.0, 1.0, 12.0), // 3, 4, ..., 12
+            InputVariable::new("diameter", Domain::Levels(vec![6.0, 8.0, 10.0, 12.0, 16.0, 20.0])),
+            InputVariable::new_continuous("load", 0.0, 3000.0),
+        ],
+        ["load == 0.6 * bolts * diameter^2 +/- 1", "load > 1000"],
+    )?;
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+    let region = sojourn::solve(&system, &mut rng)?;
+    let design = region.sample(Mat::zeros(0, 0).as_ref(), 4, &mut rng)?;
+    for c in 0..4 {
+        println!("{} bolts of M{} carry {:.1}", design[(0, c)], design[(1, c)], design[(2, c)]);
+    }
+    // 9 bolts of M16 carry 1381.8
+    // 12 bolts of M20 carry 2881.0
+    // 5 bolts of M20 carry 1199.4
+    // 12 bolts of M12 carry 1036.0
+
+    let system = ConstraintSystem::new(
+        vec![InputVariable::new_discrete("teeth", 10.0, 1.0, 40.0)],
+        ["teeth > 22.2", "teeth < 22.8"],
+    )?;
+    println!("{}", sojourn::solve(&system, &mut rng).unwrap_err());
+    // these constraints can be met continuously, at [22.654019658506105], but at no
+    // combination of the declared levels: `teeth > 22.2`, `teeth < 22.8`
+    Ok(())
+}
+```
+
+A variable is continuous, a lattice (`lower, step, upper`), or a list of levels, and a
+discrete one takes its levels and nothing between them. A lattice is read as the
+decimals you wrote, so the levels of `0, 0.1, …, 1` are exactly the literals and
+`t <= 0.3` holds at the fourth one. The continuous load above is computed from the
+discrete choices, which are never computed from anything. Interval reasoning rounds onto
+levels, so `22.2 < teeth < 22.8` is a proof. When the constraints could be met
+continuously, the verdict is `Infeasibility::BetweenLevels`, carrying a continuous
+witness: the formula is fine, and it's the step or the list of levels that needs to
+change. A system of discrete variables alone with a small lattice is enumerated, so
+asking for more points than it has returns `SampleError::Exhausted` with every one of
+them. `repair` moves a level exactly when that lands nearer.
+
 ### Scales to engineering problems
 
 Vanderplaats' stepped cantilever has a width and a height for each of a hundred

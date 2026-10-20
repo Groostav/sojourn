@@ -248,6 +248,7 @@ pub(crate) enum Slot {
     Survivors,
     Taken,
     Given,
+    Levels,
 }
 
 /// How a slot is bound: a uniform, or storage the shader reads or writes.
@@ -292,7 +293,7 @@ impl Binding {
     }
 }
 
-const BINDINGS: [Binding; 5] = [
+const BINDINGS: [Binding; 6] = [
     Binding {
         slot: Slot::Params,
         name: "params",
@@ -304,7 +305,7 @@ const BINDINGS: [Binding; 5] = [
         slot: Slot::Bounds,
         name: "bounds",
         space: "storage, read",
-        ty: "array<vec2<f32>>",
+        ty: "array<vec4<f32>>",
         access: Access::Storage { read_only: true },
     },
     Binding {
@@ -328,6 +329,13 @@ const BINDINGS: [Binding; 5] = [
         ty: "array<f32>",
         access: Access::Storage { read_only: true },
     },
+    Binding {
+        slot: Slot::Levels,
+        name: "levels",
+        space: "storage, read",
+        ty: "array<f32>",
+        access: Access::Storage { read_only: true },
+    },
 ];
 
 /// The whole shader, in the shape `templates/wgsl/harness.wgsl.jinja` renders.
@@ -341,6 +349,11 @@ struct Shader {
     workgroup: u32,
 }
 
+/// The most levels the device's table holds, over every discrete row: four
+/// megabytes of `f32`, and below `2^24`, where an `f32` count still scales a
+/// draw onto every index. A system past it is drawn on the CPU.
+const LEVEL_TABLE_LIMIT: usize = 1 << 20;
+
 /// A compiled sieve for one problem.
 pub(crate) struct Sieve {
     gpu: Arc<Gpu>,
@@ -351,7 +364,13 @@ pub(crate) struct Sieve {
     generated: wgpu::ComputePipeline,
     given: wgpu::ComputePipeline,
     params: wgpu::Buffer,
+    /// One row per variable: `(lower, upper, count, offset)`, the last two
+    /// `u32`s carried in `f32` bits. A count of zero is a continuous row,
+    /// drawn over its bounds; otherwise the row's levels are `count` entries
+    /// of `levels` from `offset`.
     bounds: wgpu::Buffer,
+    /// Every discrete row's levels, narrowed to `f32`, back to back.
+    levels: wgpu::Buffer,
     survivors: wgpu::Buffer,
     taken: wgpu::Buffer,
     /// Where `survivors` and `taken` are copied for reading: the two mapped
@@ -368,16 +387,40 @@ impl Sieve {
     /// is no adapter, or the shader does not build — the caller then takes
     /// the CPU path, which is never wrong, only slower.
     pub(crate) fn new(problem: &ConstraintSystem, state: &GpuTarget) -> Option<Self> {
-        // The device draws every coordinate uniformly over its bounds, so a
-        // discrete one would be off its levels on every draw and every
-        // survivor rejected on the CPU: a budget spent finding nothing.
-        let discrete = problem.supports.iter().any(|support| match support {
-            VariableSupport::Continuous { .. } => false,
-            VariableSupport::Discrete(_) => true,
-        });
-        if discrete {
-            tracing::debug!("the sieve does not draw levels yet; brute force stays on the CPU");
-            return None;
+        // A discrete row is drawn on the device as an index into its levels,
+        // which are tabulated: every level, narrowed. A lattice too long to
+        // tabulate — or to index in the `f32` the draw scales by — keeps
+        // brute force on the CPU, which draws it by arithmetic.
+        let mut levels: Vec<f32> = Vec::new();
+        let mut rows: Vec<[f32; 4]> = Vec::with_capacity(problem.supports.len());
+        for support in &problem.supports {
+            match support {
+                VariableSupport::Continuous { lower, upper } => {
+                    rows.push([narrow(*lower), narrow(*upper), 0.0, 0.0]);
+                }
+                VariableSupport::Discrete(held) => {
+                    if levels.len() + held.count() > LEVEL_TABLE_LIMIT {
+                        tracing::debug!(
+                            levels = held.count(),
+                            "too many levels to tabulate on the device; brute force stays on the CPU"
+                        );
+                        return None;
+                    }
+                    let count = u32::try_from(held.count()).expect("below the table limit");
+                    let offset = u32::try_from(levels.len()).expect("below the table limit");
+                    levels.extend((0..held.count()).map(|k| narrow(held.level(k))));
+                    rows.push([
+                        narrow(support.lower()),
+                        narrow(support.upper()),
+                        f32::from_bits(count),
+                        f32::from_bits(offset),
+                    ]);
+                }
+            }
+        }
+        // A binding is never empty, whether or not any row reads it.
+        if levels.is_empty() {
+            levels.push(0.0);
         }
         let gpu = acquire(state)?;
         let variables = problem.variables().len();
@@ -452,12 +495,14 @@ impl Sieve {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("bounds"),
-                contents: &bytes_of_f32(
-                    problem
-                        .supports
-                        .iter()
-                        .flat_map(|support| [narrow(support.lower()), narrow(support.upper())]),
-                ),
+                contents: &bytes_of_f32(rows.into_iter().flatten()),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let levels = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("levels"),
+                contents: &bytes_of_f32(levels.into_iter()),
                 usage: wgpu::BufferUsages::STORAGE,
             });
         let survivors = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -492,6 +537,7 @@ impl Sieve {
             given,
             params,
             bounds,
+            levels,
             survivors,
             taken,
             staging,
@@ -546,6 +592,7 @@ impl Sieve {
             Slot::Survivors => &self.survivors,
             Slot::Taken => &self.taken,
             Slot::Given => given,
+            Slot::Levels => &self.levels,
         }
     }
 
@@ -935,6 +982,52 @@ mod tests {
         assert_ne!(once, other);
         for point in &once {
             assert!(point[0] > 0.99 - 1e-3 && point[1] > 0.9 - 1e-3, "{point:?}");
+        }
+    }
+
+    /// A discrete row is drawn on the device as an index into its levels:
+    /// every survivor's discrete coordinates are levels, narrowed to `f32`,
+    /// and every ratio of the gearbox turns up — where a draw over the bounds
+    /// would put almost every survivor between levels.
+    #[test]
+    fn a_discrete_row_is_drawn_on_its_levels() {
+        use crate::cvg::support::VariableSupport;
+
+        let problem = system(
+            vec![
+                InputVariable::new("ratio", crate::Domain::Levels(vec![1.0, 2.0, 4.0])),
+                InputVariable::new_discrete("n", 0.0, 0.1, 1.0),
+                InputVariable::new_continuous("speed", 0.0, 100.0),
+            ],
+            &["speed / ratio >= 20", "speed / ratio <= 25", "n <= 0.5"],
+        );
+        let sieve = sieve_or_skip!(problem);
+
+        let survivors = sieve
+            .sieve_generated(42, 0, 1 << 16)
+            .expect("the device answered");
+
+        assert!(!survivors.is_empty(), "a tenth of the box should land");
+        for (row, support) in problem.supports.iter().enumerate() {
+            let VariableSupport::Discrete(levels) = support else {
+                continue; // a continuous row is the existing tests' business
+            };
+            let narrowed: Vec<f64> = (0..levels.count())
+                .map(|k| f64::from(super::narrow(levels.level(k))))
+                .collect();
+            for point in &survivors {
+                assert!(
+                    narrowed.contains(&point[row]),
+                    "row {row}: {} is not a level",
+                    point[row]
+                );
+            }
+        }
+        for ratio in [1.0, 2.0, 4.0] {
+            assert!(
+                survivors.iter().any(|point| point[0] == ratio),
+                "no survivor at ratio {ratio}"
+            );
         }
     }
 }

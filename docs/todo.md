@@ -313,6 +313,23 @@ thing to read, and is the first work item rather than an admission.
 
 ### Standing
 
+- [ ] **Discrete variables: three things left open.** *2026-10-20.* The design and the
+      reasons are in part two under "Discrete variables".
+      - **Measure the hot path.** `just bench` against `e8ed673`, on the continuous-only
+        cases: the box check now reads a `VariableSupport` per coordinate, and `fill` builds
+        a draw table. Neither should show, and that has not been measured.
+      - **A walker chain cannot follow an equality between discrete variables.**
+        `n == 3*m +/- 0.1` with both stepped: a move changes one level at a time, and
+        every single-level move leaves the line, so a chain stays where it started. A
+        design still covers it, but only because the pool's uniform draws do, which is
+        fine for a small lattice and not for a large one. A joint move along the
+        equality, a level of `m` with `n` recomputed and snapped, would be a drive onto
+        levels, which nothing does yet.
+      - **Repair clones the system per assignment it tries.** That is cheap while the
+        search stops at the second assignment, as it does on every fixture. If a caller
+        with many discrete variables measures it badly, `Arc<[Constraint]>` makes the
+        clone a pointer copy.
+
 - [ ] **A computed subscript in a system is bounded, not understood.** *2026-09-21.*
       `compile_system` (`docs/compile-system.md`) lays a node's row out as the inputs it reads
       then the externals and outputs it names, so `var[floor(x1)]` could have reached an
@@ -2344,6 +2361,107 @@ keeps a fallible signature.
   turn `x1 > 5` into `5 - x1` in place, letting `(x1 > 5) * 3` compile. The grammar admits
   `booleanExpr` only at `returnStatement`, so that is unreachable here — pinned by
   `a_boolean_cannot_be_used_as_a_scalar`.
+
+## Discrete variables
+
+*2026-10-19 to 2026-10-20.* Built test-first: `tests/cvg_discrete.rs` was written red
+in one commit and driven green rung by rung. The decisions that the code cannot say:
+
+**A declaration, not a language feature.** Discreteness is a property of the variable,
+so it belongs next to its bounds as a `Domain`, not in babel. As a constraint it cannot
+be said. `x == floor(x)` is implicit and refused. `x % 1 == 0` is a set of measure zero,
+which brute force never lands on and nothing can drive. Rounding a continuous answer
+afterwards fails the oracle, and `repair` then moves the point back off the lattice.
+
+**Ordinal only.** A discrete domain is numbers in order. Categories (`table`, `chair`)
+are the caller's to alias onto an integer lattice. Sampling and proof don't care about
+order: a Gibbs draw over levels and a split between levels are order-free. Three
+places do read the order: a design's spread, repair's "nearest", and the local solve's
+relaxation. Artemis normalises every variable to `-1..1` before calling, so it already
+lives with that, and a `Categorical` domain waits for a caller who doesn't.
+
+**A lattice is decimal.** `lower + k·step` puts level 3 of `{0, 0.1, 1}` at
+`0.30000000000000004`, so `t <= 0.3` fails on a declared value. `cvg::support` reads
+each bound and the step as their shortest round-trip decimals, brings them to a common
+power of ten, and holds integers. Level `k` is then one correctly rounded operation on
+two exact operands, which is bit-equal to parsing the literal (Clinger's fast path).
+What can't be held that way, such as a step of `1/3`, a bound of `0.1 + 0.2`, or a
+lattice past `2^53`, is refused with a pointer to `Domain::Levels`.
+
+**Support, not domain.** The `Domain` is what the caller wrote, and is kept as written.
+The `VariableSupport` is that declaration validated and precomputed, and it is the one
+thing the relaxation and repair's pinned systems change. So the engine reads bounds only
+from `ConstraintSystem::supports`. Deriving a lattice's integers per judgement means
+formatting floats, which is why the support exists at all.
+
+**The measure.** The uniform distribution over a mixed space is counting measure on the
+levels times Lebesgue measure on the rest. A level is weighted by how much continuous
+room it has. In the gearbox fixture, ratio 4 has four times ratio 1's speed band. That
+is what the walker's Gibbs move over levels converges to when nothing is driven. With a
+driven coordinate, the move re-draws the band after changing a level and does not
+weight by band width: the bias the walker already had, not a new one. A design spreads
+across the levels whatever the weighting, which is what the tests pin.
+
+**Rounding inward is sound, and is the proof.** An interval is a superset of the values
+it models, and rounding its ends onto levels removes only values the coordinate can't
+take. `n` in `[2.5, 2.9]` on the integers is empty, and that emptiness is a proof
+nothing else could give. Contraction counts one level removed as progress, because the
+1% width rule would ignore a single level on a long lattice. The visit cap bounds the
+crawl: `2x == 2y + 1` on `0..=20` empties in about eleven visits, and on `0..=1e6` it
+crawls to the cap and stays `NotFound`, the honest answer.
+
+**A box of one point is decided by judging it.** Bisection splits a discrete coordinate
+between adjacent levels. A box narrowed to a single value in every coordinate is judged
+as it stands, without `classify::centre`, which could move a driven coordinate out of
+the box. If it fails, the box is empty, blamed on what it violates and on what narrowed
+the box to it. That makes enumeration a proof: `n % 2 == 1` over even `n` is about
+twenty contractions. The rule holds for a continuous coordinate of zero width too, and
+no existing fixture moved.
+
+**`BetweenLevels` needs a witness.** A proof over levels might mean the formulation
+conflicts, or that the levels miss a region that exists. The two send the caller to
+different places: fix the formula, or change the step. So `solve` re-opens
+`ConstraintSystem::relaxed` with every discrete variable continuous, rebuilt rather
+than re-supported, because a continuous variable can be driven and the plans differ.
+- **The run.** It uses the stream the region would have kept, which goes unused on this
+  path, and has no brute force: a relaxation thin enough to need a billion proposals is
+  no basis for telling a caller to move a step.
+- **The verdict.** A witness gives `BetweenLevels`. A continuous proof gives `Proved`
+  with its own blame. Nothing gives `Proved` with the lattice's blame.
+
+`relaxed` is a `Point` and not an `Option`. Without a witness, nothing says the levels
+are the trouble.
+
+**`Exhausted` is a proof and `Degenerate` a shrug.** When every variable is discrete
+and the lattice is at most `ENUMERATION_LIMIT = 2^16` points, `design` judges all of
+them. A shortfall then means there are no more points. A zero-width continuous variable
+is not declared finite, so `a_region_that_is_one_point_designs_one_point_and_says_so`
+stays `Degenerate`.
+
+**Repair is pure distance, by search over levels.** "Keep the optimizer's levels unless
+there's no other way" was considered and dropped. Artemis normalises discrete variables
+along with the rest, and on an all-discrete system the rule decays into distance anyway.
+Every continuous stage of repair moves coordinates continuously, and a level isn't
+reached that way, so the stages were left untouched and run on
+`ConstraintSystem::pinned`, each discrete support narrowed to one level, a zero-width
+coordinate that every stage already handles.
+- **Order.** Assignments are tried nearest-first by their discrete distance alone. The
+  search stops at the first one no nearer than the best landing.
+- **Budget.** It is bounded by `LEVEL_SEARCH_BUDGET = 64`.
+- **Pruning.** A pinned box that contracts to nothing is skipped without a repair.
+- **Fallback.** The reference's own levels are tried last if nothing lands.
+- **Measured.** Before the search, the gearbox repair `(ratio 1, speed 90)` landed at
+  `(2, 48.4)`, a sampling-box hit at 0.533. With it, it lands at `(2, 50)` at 0.521.
+- **Defect found.** The search exposed one in the continuous path. The reference stage
+  offered its chord's end as feasible without judging it, which was safe only while the
+  reference was always feasible. It now judges it.
+
+**The GPU draws levels from a table.** Each row is `(lower, upper, count, offset)`, the
+last two carried as `u32` bits in `f32`. A discrete row draws `levels[offset +
+floor(u·count)]`, from at most `2^20` levels in all, and a system past that stays on the
+CPU. A survivor's `f32` level is not the level, so `brute_force_on_gpu` snaps each
+discrete coordinate to the nearest `f64` level before the exact judgement, which decides
+regardless.
 
 # Repair for Artemis — a public `repair`, specified before it is built
 

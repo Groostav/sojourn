@@ -15,10 +15,11 @@
 //! generator is used, should land inside the old band; one that moves the
 //! band is a finding.
 //!
-//! The design gets no floors yet: the first run measures, and the floors are
-//! pinned from it. The control does, because the control checks the
-//! measures — a random design that scores far from random means a metric is
-//! wrong, not sojourn.
+//! The design's worst seed is held to floors pinned from the first run (see
+//! [`Floor`]); the ledger row is written first, so a failing run still
+//! records what it scored. The control is checked too, because the control
+//! checks the measures — a random design that scores far from random means
+//! a metric is wrong, not sojourn.
 //!
 //! Release only, by `just quality`: the reference's kernel sum is quadratic
 //! in its twenty thousand points, and the twenty-dimensional simplex is
@@ -62,7 +63,83 @@ struct Fixture {
     draw: fn(&mut Xoshiro256PlusPlus) -> Point,
     /// Which piece of the region a point is in, where the region has pieces.
     piece: Option<fn(&[f64]) -> usize>,
-    counts: &'static [usize],
+    cases: &'static [Case],
+}
+
+/// One design count, and what its worst seed must score.
+struct Case {
+    count: usize,
+    floor: Floor,
+}
+
+/// Regression floors, judged on the worst of the ten seeds, never the mean:
+/// a mean hides one bad seed, and a bad seed is a design somebody receives.
+/// Pinned on 2026-10-21 from the first rows at 0.8× the worst seed where
+/// higher is better and 1.25× where lower is, so a change that stays inside
+/// the seed spread passes and one that moves it fails. They guard what
+/// farthest-first does today, not what a design should do: the twenty
+/// dimensional ceilings sit well above random's 1.0 on purpose. Every
+/// fixture also requires that no piece go without a point.
+struct Floor {
+    /// Fraction of strata filled, mean over continuous axes. At least.
+    strata: f64,
+    /// Largest gap between a level's share and the reference's. At most.
+    levels: f64,
+    /// CL2 over what random scores. At most.
+    cl2_ratio: f64,
+    /// Smallest pairwise distance, box-normalised. At least.
+    min_distance: f64,
+    /// Covering radius, box-normalised. At most.
+    cover: f64,
+}
+
+impl Floor {
+    fn check(&self, slug: &str, count: usize, design: &Summary) {
+        let failures: Vec<String> = [
+            (
+                design.strata_worst >= self.strata,
+                format!("strata {} below {}", design.strata_worst, self.strata),
+            ),
+            (
+                design.levels_worst <= self.levels,
+                format!("level gap {} above {}", design.levels_worst, self.levels),
+            ),
+            (
+                design.cl2_ratio_worst <= self.cl2_ratio,
+                format!(
+                    "CL2 ratio {} above {}",
+                    design.cl2_ratio_worst, self.cl2_ratio
+                ),
+            ),
+            (
+                design.min_distance_worst >= self.min_distance,
+                format!(
+                    "min distance {} below {}",
+                    design.min_distance_worst, self.min_distance
+                ),
+            ),
+            (
+                design.cover_worst <= self.cover,
+                format!(
+                    "covering radius {} above {}",
+                    design.cover_worst, self.cover
+                ),
+            ),
+            (
+                design.missing_worst == 0,
+                format!("{} pieces without a point", design.missing_worst),
+            ),
+        ]
+        .into_iter()
+        .filter(|(held, _)| !held)
+        .map(|(_, failure)| failure)
+        .collect();
+        assert!(
+            failures.is_empty(),
+            "{slug} n={count}, worst seed: {}",
+            failures.join("; ")
+        );
+    }
 }
 
 impl Fixture {
@@ -104,6 +181,7 @@ fn unit_box(
     dims: usize,
     slug: &'static str,
     draw: fn(&mut Xoshiro256PlusPlus) -> Point,
+    cases: &'static [Case],
 ) -> Fixture {
     Fixture {
         slug,
@@ -111,16 +189,68 @@ fn unit_box(
         constraints: Vec::new(),
         draw,
         piece: None,
-        counts: &[10, 100],
+        cases,
     }
 }
 
 fn box_2d() -> Fixture {
-    unit_box(2, "box-2d", |rng| (0..2).map(|_| uniform(rng)).collect())
+    unit_box(
+        2,
+        "box-2d",
+        |rng| (0..2).map(|_| uniform(rng)).collect(),
+        &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.40,
+                    levels: 0.0,
+                    cl2_ratio: 1.33,
+                    min_distance: 0.231,
+                    cover: 0.425,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.45,
+                    levels: 0.0,
+                    cl2_ratio: 0.69,
+                    min_distance: 0.0626,
+                    cover: 0.129,
+                },
+            },
+        ],
+    )
 }
 
 fn box_20d() -> Fixture {
-    unit_box(20, "box-20d", |rng| (0..20).map(|_| uniform(rng)).collect())
+    unit_box(
+        20,
+        "box-20d",
+        |rng| (0..20).map(|_| uniform(rng)).collect(),
+        &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.24,
+                    levels: 0.0,
+                    cl2_ratio: 3.41,
+                    min_distance: 1.482,
+                    cover: 2.633,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.43,
+                    levels: 0.0,
+                    cl2_ratio: 2.71,
+                    min_distance: 1.161,
+                    cover: 2.263,
+                },
+            },
+        ],
+    )
 }
 
 /// Uniform on the disc by `r = √u`: area grows as `r²`. Shrunk by a
@@ -136,7 +266,28 @@ fn disc() -> Fixture {
             vec![radius * angle.cos(), radius * angle.sin()]
         },
         piece: None,
-        counts: &[10, 100],
+        cases: &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.48,
+                    levels: 0.0,
+                    cl2_ratio: 0.82,
+                    min_distance: 0.216,
+                    cover: 0.388,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.48,
+                    levels: 0.0,
+                    cl2_ratio: 0.44,
+                    min_distance: 0.0535,
+                    cover: 0.111,
+                },
+            },
+        ],
     }
 }
 
@@ -162,7 +313,7 @@ fn simplex(
     dims: usize,
     slug: &'static str,
     draw: fn(&mut Xoshiro256PlusPlus) -> Point,
-    counts: &'static [usize],
+    cases: &'static [Case],
 ) -> Fixture {
     Fixture {
         slug,
@@ -173,17 +324,57 @@ fn simplex(
         )],
         draw,
         piece: None,
-        counts,
+        cases,
     }
 }
 
 fn simplex_5d() -> Fixture {
-    simplex(5, "simplex-5d", |rng| dirichlet(5, rng), &[10, 100])
+    simplex(
+        5,
+        "simplex-5d",
+        |rng| dirichlet(5, rng),
+        &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.40,
+                    levels: 0.0,
+                    cl2_ratio: 2.14,
+                    min_distance: 0.269,
+                    cover: 0.694,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.44,
+                    levels: 0.0,
+                    cl2_ratio: 1.95,
+                    min_distance: 0.116,
+                    cover: 0.451,
+                },
+            },
+        ],
+    )
 }
 
 /// 1/20! of its box: the probe sees nothing, and the design is walked.
 fn simplex_20d() -> Fixture {
-    simplex(20, "simplex-20d", |rng| dirichlet(20, rng), &[100])
+    simplex(
+        20,
+        "simplex-20d",
+        |rng| dirichlet(20, rng),
+        &[Case {
+            count: 100,
+            floor: Floor {
+                strata: 0.44,
+                levels: 0.0,
+                cl2_ratio: 2.44,
+                min_distance: 0.153,
+                cover: 0.447,
+            },
+        }],
+    )
 }
 
 /// Each coordinate of the corner simplex is Beta(1, d).
@@ -212,7 +403,28 @@ fn two_pieces() -> Fixture {
             vec![x1, uniform(rng)]
         },
         piece: Some(|point| usize::from(point[0] > 0.0)),
-        counts: &[10, 100],
+        cases: &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.24,
+                    levels: 0.0,
+                    cl2_ratio: 1.26,
+                    min_distance: 0.196,
+                    cover: 0.324,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.44,
+                    levels: 0.0,
+                    cl2_ratio: 1.43,
+                    min_distance: 0.0412,
+                    cover: 0.088,
+                },
+            },
+        ],
     }
 }
 
@@ -235,7 +447,28 @@ fn band() -> Fixture {
             }
         },
         piece: None,
-        counts: &[10, 100],
+        cases: &[
+            Case {
+                count: 10,
+                floor: Floor {
+                    strata: 0.64,
+                    levels: 0.0,
+                    cl2_ratio: 0.50,
+                    min_distance: 0.0683,
+                    cover: 0.171,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.65,
+                    levels: 0.0,
+                    cl2_ratio: 0.32,
+                    min_distance: 0.00635,
+                    cover: 0.0284,
+                },
+            },
+        ],
     }
 }
 
@@ -272,7 +505,28 @@ fn gearbox() -> Fixture {
                 .position(|ratio| *ratio == point[0])
                 .expect("a gearbox point is at one of its ratios")
         }),
-        counts: &[12, 100],
+        cases: &[
+            Case {
+                count: 12,
+                floor: Floor {
+                    strata: 0.60,
+                    levels: 0.195,
+                    cl2_ratio: 1.14,
+                    min_distance: 0.0189,
+                    cover: 0.0313,
+                },
+            },
+            Case {
+                count: 100,
+                floor: Floor {
+                    strata: 0.68,
+                    levels: 0.066,
+                    cl2_ratio: 1.03,
+                    min_distance: 0.00196,
+                    cover: 0.0042,
+                },
+            },
+        ],
     }
 }
 
@@ -440,7 +694,8 @@ fn measure(fixture: &Fixture) -> anyhow::Result<()> {
             .collect()
     });
 
-    for &count in fixture.counts {
+    for case in fixture.cases {
+        let count = case.count;
         let mut designs = Vec::new();
         for seed in 0..SEEDS {
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
@@ -500,6 +755,8 @@ fn measure(fixture: &Fixture) -> anyhow::Result<()> {
             fixture.slug,
             checked.strata_mean
         );
+
+        case.floor.check(fixture.slug, count, &design);
     }
     Ok(())
 }

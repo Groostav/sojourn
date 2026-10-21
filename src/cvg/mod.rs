@@ -509,10 +509,12 @@ pub(crate) fn open(
 /// choice is the pool point whose nearest neighbour among `existing` and the
 /// choices so far is farthest, in box-normalised Euclidean distance, the
 /// metric `repair` lands by. With nothing to spread from, the first choice is
-/// the witness. A Latin hypercube was considered and is the wrong tool here:
-/// it stratifies each axis, which says nothing about a design of fewer
-/// points than dimensions, where "far from each other and from what the
-/// caller has" is the whole requirement.
+/// the witness. Not a Latin hypercube: one stratifies each axis, at any count,
+/// but cannot say "far from what the caller has", which this must. Measured
+/// on regions with a known distribution (`tests/sampling_quality.rs`) it
+/// fills strata at random's rate; in twenty dimensions it puts half as many
+/// coordinates again within a twentieth of a face as random does, and its
+/// centred L2 discrepancy is about twice random's.
 ///
 /// Fewer than `count` only when the region ran out of distinct points: the
 /// next choice would coincide with one already in the design, which a

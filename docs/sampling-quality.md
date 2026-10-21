@@ -64,8 +64,8 @@ variables "has no useful stratification" (`FeasibleRegion::sample`, `cvg::design
 on designs). That overstates it. A Latin hypercube's guarantee is one-dimensional at every ratio
 of points to dimensions: each axis still has `n` strata with one point each, whatever `d` is.
 What is true is that the guarantee is *only* one-dimensional, and on a constrained region the
-strata have to be the region's marginals rather than the box's. Rewrite those sentences in step 2,
-with the numbers.
+strata have to be the region's marginals rather than the box's. Those sentences were rewritten
+in step 2.
 
 ## Fixtures
 
@@ -100,8 +100,12 @@ is a finding. A pass/fail floor, when one is pinned, is judged on the worst seed
 a mean hides one bad seed, and a bad seed is a design somebody receives.
 
 The control is asserted on, over two hundred random designs per case: they must average a CL2 ratio within 0.15 of one and fill within 0.02 of
-`1 - (1 - 1/n)^n` of their strata. That checks the measures, not sojourn. The design gets no
-floors in step 1.
+`1 - (1 - 1/n)^n` of their strata. That checks the measures, not sojourn. The design's worst
+seed is held to a `Floor` per case: 0.8× the first run's worst where higher is better, 1.25×
+where lower is, and no piece of a region without a point. The floors guard today's sampler
+against regression; they are not a target, and the twenty-dimensional CL2 ceilings sit above
+random's 1.0 on purpose. The ledger row is written before the floor is checked, so a failing run
+still records what it scored.
 
 `just quality` runs it, in release. The fixtures' own checks run in debug with the rest of the
 suite.
@@ -115,10 +119,11 @@ suite.
    ledger. *Landed 2026-10-21; first measurements below.*
 2. **A baseline, and floors.** Read the first rows; pin floors at roughly 0.8× the worst seed
    (the knothe-rosenblatt plan's rule); rewrite the "no useful stratification" sentences; record
-   in `todo.md` part two what farthest-first does in high dimension. The expectation, unconfirmed:
-   maximin over a pool in twenty dimensions is pushed toward the box's faces and its
-   one-dimensional projections bunch, which shows up as low strata and a CL2 ratio near or above
-   one.
+   in `todo.md` part two what farthest-first does in high dimension. The expectation was that
+   maximin in twenty dimensions is pushed toward the box's faces and its one-axis projections
+   bunch. Half right: it crowds the faces (15% of coordinates within a twentieth of one, against
+   random's 10%), but its axes are less correlated than random's and its strata fill at random's
+   rate. *Landed 2026-10-21; `todo.md` part two, "What farthest-first does to a design".*
 3. **`FeasibleRegion::draw` and the pool's own quality.** The candidate pool `cvg::design`
    already builds, returned without the selection, so a caller can choose from it by another
    criterion. Measured with the same fixtures: whatever is chosen from a pool can be no better
@@ -162,14 +167,15 @@ over ten seeds, the ten-seed random control in parentheses.*
 No design missed a piece: two-pieces and gearbox show `missing-worst` 0 at every count. One
 random gearbox control of twelve missed a ratio.
 
-What it says, for step 2 to confirm and act on:
+What it says (confirmed in step 2, with the face measurement above):
 
 - **In two dimensions, farthest-first does what it is for.** Minimum distance is ten times
   random's, the covering radius half, and the CL2 ratio well under one at a hundred points.
 - **In twenty dimensions it loses to random on discrepancy.** CL2 ratio 1.9 on the box and 1.45
   on the simplex, against random's 1.0. It still spreads points apart (minimum distance half as
-  large again), but its covering radius is no better than random's. The suspicion this was
-  written to test is borne out: maximin's projections are worse than random's.
+  large again), but its covering radius is no better than random's. The cause is the marginals,
+  not correlation between axes: it crowds the faces, and its axes are less correlated than
+  random's.
 - **It is never Latin where it has room to be.** Strata sit at random's 0.63 on every box, disc
   and simplex. The band and the gearbox score higher only because their continuous room is one
   long thin stretch, where spreading apart is the same as stratifying.

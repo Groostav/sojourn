@@ -157,7 +157,8 @@ designs of the same count drawn from the exact sampler: the control.
 **Deterministic, so no wall-clock caveats.** The same seed gives the same
 number on every machine, and the noise is the spread across seeds, which the
 worst column is. A change of generator or of how it is used should land
-inside that band; one that moves the band is a finding. Host is still in the
+inside that band; one that moves the band is a finding. The test holds each case's worst seed to a floor pinned from the first rows
+(`Floor` in `tests/sampling_quality.rs`), after writing the row. Host is still in the
 key, for the upsert rule. Release only, because the reference's kernel sum is
 quadratic in its points, not because a debug number would differ.
 

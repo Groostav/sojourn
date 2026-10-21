@@ -791,9 +791,13 @@ impl FeasibleRegion {
     /// then spends); so the design is a function of this region, `existing`,
     /// `count` and `rng`'s state — the same state gives the same matrix, and
     /// the same generator carried on gives the next design, spread from
-    /// whatever `existing` says. Not a Latin hypercube: a design of fewer points than
-    /// variables — the usual case — has no useful stratification, and "far
-    /// from what I have" is the whole requirement. Cost is
+    /// whatever `existing` says. Not a Latin hypercube, and no more stratified
+    /// than random: "far from what I have" is a requirement a Latin hypercube
+    /// cannot state, though its one-axis guarantee holds at any count, fewer
+    /// points than variables included. In two dimensions this beats random
+    /// on every measure; at a hundred points in twenty it pushes coordinates
+    /// toward the box's faces and is less even than random by centred L2
+    /// discrepancy (`docs/sampling-quality.md` has the numbers). Cost is
     /// `O(count² · dimensions)` in the selection plus the walk: milliseconds
     /// at twenty variables, a few seconds at two hundred for a pool of a
     /// hundred and fifty.

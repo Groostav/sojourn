@@ -315,12 +315,11 @@ thing to read, and is the first work item rather than an admission.
 
 - [ ] **Sampling quality: a baseline, then a pool to choose from.** *2026-10-21.* The
       plan is `docs/sampling-quality.md`; step 1 (`sojourn::quality`, the closed-form
-      fixtures, `just quality` and its ledgers) has landed. Next: pin floors from the
-      first rows; correct "a design of fewer points than variables has no useful
-      stratification" (`FeasibleRegion::sample`, `cvg::design`, `AGENTS.md`), which the
-      numbers now contradict; then `FeasibleRegion::draw`. The first run's headline:
-      farthest-first beats random in two dimensions and loses to it in twenty, and is
-      no more Latin than random anywhere it has room to be.
+      fixtures, `just quality` and its ledgers) and step 2 (floors on the worst seed,
+      the stratification claim corrected) have landed. Next: `FeasibleRegion::draw`, or a
+      chooser handed to `sample`. Part two, "What farthest-first does to a design", has
+      the finding: beats random in two dimensions; in twenty it crowds the faces and
+      loses to random on CL2; no more Latin than random anywhere it has room to be.
 - [ ] **Discrete variables: three things left open.** *2026-10-20.* The design and the
       reasons are in part two under "Discrete variables".
       - **Measure the hot path.** `just bench` against `e8ed673`, on the continuous-only
@@ -2495,6 +2494,50 @@ CPU. A survivor's `f32` level is not the level, so `brute_force_on_gpu` snaps ea
 discrete coordinate to the nearest `f64` level before the exact judgement, which decides
 regardless.
 
+## What farthest-first does to a design
+
+*2026-10-21.* Measured by `just quality` (`tests/sampling_quality.rs`, plan and table in
+`docs/sampling-quality.md`) against exact samplers written without sojourn, ten seeds a
+case, beside random designs of the same count.
+
+**It is not Latin, and the reason the docs gave for that was wrong.** They said a design
+of fewer points than variables "has no useful stratification". A Latin hypercube's
+guarantee is one-dimensional and holds at any count: `n` strata per axis, one point in
+each, whatever `d` is. What farthest-first actually scores is random's fill, about
+`1 - 1/e`, on every box, disc and simplex. Only the band and the gearbox score higher
+(0.86, 0.89), because their continuous room is one thin stretch, where spreading points
+apart is the same thing as stratifying them. The sentences in `FeasibleRegion::sample`,
+`cvg::design` and `AGENTS.md` now say so.
+
+**In two dimensions it beats random on everything.** At a hundred points on the box:
+CL2 ratio 0.37 against 1.23, minimum distance 0.080 against 0.007, covering radius 0.093
+against 0.184.
+
+**In twenty it is less even than random.** At a hundred points the CL2 ratio is 1.89 on
+the box and 1.45 on the simplex, against random's 1.0. The step-1 guess was that maximin
+pushes points to the faces *and* bunches the one-axis projections. A throwaway probe over
+the same ten seeds on the 20-D box split the two:
+
+| n | within 0.05 of a face | mean `\|z - ½\|` | mean `\|corr\|` between axes |
+|---|---|---|---|
+| 100 | 0.154 (random 0.100) | 0.287 (random 0.250) | 0.060 (random 0.082) |
+| 10 | 0.174 (random 0.100) | 0.297 (random 0.250) | 0.240 (random 0.266) |
+
+The faces, yes; the bunching, no. The axes are less correlated than random's, and the
+strata fill at random's rate. Maximin's farthest point in a high-dimensional box is
+toward a corner, so each pick pushes outward on most axes at once. CL2's kernel charges
+a point roughly `|z - ½|²` per axis for standing off-centre, and the product over
+twenty axes compounds that. The 2-D design is outward too (0.165 near a face) and does
+not pay, because in two dimensions spreading also fills the joint, which is what CL2
+mostly measures there. What follows is that a better choice in high dimension has to fix
+the marginals; spreading harder will not.
+
+**The floors guard this, not a target.** Each `Case` in `tests/sampling_quality.rs` holds
+its worst seed to 0.8× the first run's worst where higher is better and 1.25× where lower
+is, with no piece of a region left empty. They catch a regression in today's sampler. The
+twenty-dimensional CL2 ceilings sit well above random's 1.0 on purpose; a chooser that
+beats random there is step 3's and the consumer's work, measured in the same columns.
+
 # Repair for Artemis — a public `repair`, specified before it is built
 
 **Status:** built — `FeasibleRegion::repair` in `src/repair.rs`, driven by `tests/cvg_repair.rs`.
@@ -2690,7 +2733,8 @@ handful of points at a dimension usually larger than the count. So:
   point-sized region, or a fully driven one (`abs(x1) == 1` is two points, and a design
   of two hundred over it is two). Not a Latin hypercube: at `count < dims` an LHS
   guarantees nothing, and "far from each other and from what I have" is the whole
-  requirement. The pool is `2·count + 128`: the walk is the cost, and a small design
+  requirement. *(2026-10-21: overstated. An LHS's one-axis guarantee holds at any count;
+  see "What farthest-first does to a design".)* The pool is `2·count + 128`: the walk is the cost, and a small design
   needs a floor of candidates to be a choice at all.
 - `repair`'s reference stage reads the region's `reference` instead of running
   `find_initial` per call: the opening's local solve from the box centre where it ran one,

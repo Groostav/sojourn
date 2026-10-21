@@ -200,8 +200,11 @@ function of the region, the caller's existing points, the count and the
 generator's state: a fresh sampler and a clone of the region's walker per
 call, a pool of candidates, farthest-first selection in box-normalised
 Euclidean distance; the same generator carried on gives the next design. Not
-a Latin hypercube — a design of fewer points than variables has no useful
-stratification.
+a Latin hypercube, and no more stratified than random. A Latin hypercube's
+one-axis guarantee holds at any count, so "fewer points than variables" is
+not the reason; "far from what I have", which it cannot state, is. In twenty
+dimensions farthest-first crowds the box's faces and loses to random on
+discrepancy: `just quality` measures it, and its floors guard it.
 
 **A discrete variable takes its levels and nothing between them.** An
 `InputVariable` declares a `Domain`: `Continuous`, `Stepped` (a lattice), or

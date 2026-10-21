@@ -313,6 +313,14 @@ thing to read, and is the first work item rather than an admission.
 
 ### Standing
 
+- [ ] **Sampling quality: a baseline, then a pool to choose from.** *2026-10-21.* The
+      plan is `docs/sampling-quality.md`; step 1 (`sojourn::quality`, the closed-form
+      fixtures, `just quality` and its ledgers) has landed. Next: pin floors from the
+      first rows; correct "a design of fewer points than variables has no useful
+      stratification" (`FeasibleRegion::sample`, `cvg::design`, `AGENTS.md`), which the
+      numbers now contradict; then `FeasibleRegion::draw`. The first run's headline:
+      farthest-first beats random in two dimensions and loses to it in twenty, and is
+      no more Latin than random anywhere it has room to be.
 - [ ] **Discrete variables: three things left open.** *2026-10-20.* The design and the
       reasons are in part two under "Discrete variables".
       - **Measure the hot path.** `just bench` against `e8ed673`, on the continuous-only

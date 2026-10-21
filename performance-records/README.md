@@ -128,6 +128,46 @@ Not produced by a run, and carried forward from `docs/todo.md`:
 - **`2.0.6-native`** — the Rust wave-1 baseline, recorded in `docs/todo.md`
   before these ledgers existed.
 
+## Quality ledgers
+
+`quality-<fixture>-<count>.csv`, written by `tests/sampling_quality.rs` on
+`just quality`. These measure how good a design is, not how fast: each
+fixture is a region whose uniform distribution is drawn exactly by a sampler
+written without sojourn, and `sojourn::quality` scores `sample`'s designs
+against twenty thousand of those draws. The plan and the fixtures are in
+[`docs/sampling-quality.md`](../docs/sampling-quality.md).
+
+Columns: `version;timestamp;host;dims;count;seeds;strata-mean;strata-worst;levels-worst;cl2-ratio-mean;cl2-ratio-worst;min-dist-mean;min-dist-worst;cover-mean;cover-worst;missing-worst;random-cl2-ratio;random-min-dist;random-cover`
+
+| measure | better | random scores |
+|---|---|---|
+| `strata`: fraction of the reference marginal's `n` strata holding a point, mean over continuous axes | higher; `1.0` is Latin | `1 - (1 - 1/n)^n`, about 0.63 |
+| `levels`: worst gap between a level's share in the design and in the reference | lower | — |
+| `cl2-ratio`: centred-L2 discrepancy over what random scores | lower | `1.0` by construction |
+| `min-dist`: smallest pairwise distance, box-normalised | higher | the `random-min-dist` column |
+| `cover`: farthest a reference point lies from the design | lower | the `random-cover` column |
+| `missing`: pieces of the region with no design point | lower | — |
+
+**Ten seeds, the mean and the worst.** Every row is ten designs, one per
+generator seed `0..10`, carried from `solve` into `sample`. A `-mean` column
+is their mean, and a `-worst` column the worst seed in whichever direction is
+worse for that measure. The `random-*` columns are the means of ten random
+designs of the same count drawn from the exact sampler: the control.
+
+**Deterministic, so no wall-clock caveats.** The same seed gives the same
+number on every machine, and the noise is the spread across seeds, which the
+worst column is. A change of generator or of how it is used should land
+inside that band; one that moves the band is a finding. Host is still in the
+key, for the upsert rule. Release only, because the reference's kernel sum is
+quadratic in its points, not because a debug number would differ.
+
+**A random design's CL2 ratio is heavy-tailed.** It is a weighted χ² of mean
+one, dominated by a few low-order projections, so its median sits well below
+the mean and a mean of ten strays. The gearbox's control read 0.47 over ten,
+while two hundred hold within a tenth of one. The test checks the measures on
+two hundred; the ledger's `random-cl2-ratio` is the first ten of them, for the
+like-for-like comparison with the design.
+
 ## Brute-squad ledgers
 
 Written by `tests/brute_squad.rs` on `just brute` or `just bench`. One file per

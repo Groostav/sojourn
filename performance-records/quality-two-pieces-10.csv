@@ -1,0 +1,3 @@
+sep=;
+version                 ;timestamp               ;host                    ;dims ;count ;seeds ;strata-mean ;strata-worst ;levels-worst ;cl2-ratio-mean ;cl2-ratio-worst ;min-dist-mean ;min-dist-worst ;cover-mean ;cover-worst ;missing-worst ;random-cl2-ratio ;random-min-dist ;random-cover ;
+0.3.0                   ;2026-10-21T09:51:06Z    ;BATOU                   ;2    ;10    ;10    ;0.5450      ;0.3000       ;0.0000       ;0.7159         ;1.0012          ;0.26775       ;0.24562        ;0.24897    ;0.25903     ;0             ;0.8044           ;0.05782         ;0.50223      ;

@@ -57,6 +57,13 @@ brute:
 # Cargo.toml resolves fine and wastes an afternoon. The tag is `v<version>`,
 # optionally suffixed (`v0.1.3-artemis`); the tree must be clean so the tag
 # names what is committed. Tags locally only — pushing is a deliberate step.
+# Deterministic per seed, so not wall-clock sensitive like `bench`; release
+# only because each reference's kernel sum is quadratic in its twenty
+# thousand points. See docs/sampling-quality.md.
+[doc("Design quality against closed-form regions, ten seeds a case, in release")]
+quality:
+    cargo nextest run --release --no-capture --no-fail-fast --test sampling_quality
+
 [doc("Tag the current commit as `v<version>[-suffix]`, checked against Cargo.toml")]
 tag name:
     if (git status --porcelain) { throw "the tree is not clean; commit or stash first" }; \

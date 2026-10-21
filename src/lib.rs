@@ -110,6 +110,7 @@ pub mod diagnostics;
 mod eval;
 mod frontend;
 mod nodes;
+pub mod quality;
 mod repair;
 mod solve;
 mod system;

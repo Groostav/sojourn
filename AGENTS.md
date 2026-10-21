@@ -22,6 +22,10 @@ Read these before changing anything, in this order:
 4. [`docs/brute-squad.md`](docs/brute-squad.md) — the plan for wide-batch
    sampling (IR tape, CPU vectorisation, wgpu). Owns the "sample harder" tier;
    `docs/todo.md` owns the solver and equality-constraint side.
+5. [`docs/sampling-quality.md`](docs/sampling-quality.md) — how good a design
+   is, measured against regions whose distribution is known in closed form:
+   `sojourn::quality`, the fixtures, and the ledgers. Read before changing how
+   `sample` chooses points.
 
 ## Layout
 
@@ -52,6 +56,7 @@ just test           cargo nextest run --no-fail-fast, then cargo test --doc
 just lint           fmt --check and clippy -D warnings, check-only; --all-targets compiles every test
 just bench          release-mode throughput, writes performance-records/*.csv
 just brute          time-to-first-hit rungs + checks/s, release, machine otherwise idle
+just quality        design quality on closed-form regions, ten seeds a case, release
 just tag NAME       tag the commit as v<version>[-suffix], checked against Cargo.toml
 ```
 

@@ -137,7 +137,7 @@ written without sojourn, and `sojourn::quality` scores `sample`'s designs
 against twenty thousand of those draws. The plan and the fixtures are in
 [`docs/sampling-quality.md`](../docs/sampling-quality.md).
 
-Columns: `version;timestamp;host;dims;count;seeds;strata-mean;strata-worst;levels-worst;cl2-ratio-mean;cl2-ratio-worst;min-dist-mean;min-dist-worst;cover-mean;cover-worst;missing-worst;random-cl2-ratio;random-min-dist;random-cover`
+Columns: `version;timestamp;host;dims;count;seeds;strata-mean;strata-worst;levels-worst;cl2-ratio-mean;cl2-ratio-worst;min-dist-mean;min-dist-worst;cover-mean;cover-worst;missing-worst;random-cl2-ratio;random-min-dist;random-cover;pool-size;pool-strata;pool-cl2-ratio;pool-cover;pool-missing`
 
 | measure | better | random scores |
 |---|---|---|
@@ -152,7 +152,10 @@ Columns: `version;timestamp;host;dims;count;seeds;strata-mean;strata-worst;level
 generator seed `0..10`, carried from `solve` into `sample`. A `-mean` column
 is their mean, and a `-worst` column the worst seed in whichever direction is
 worse for that measure. The `random-*` columns are the means of ten random
-designs of the same count drawn from the exact sampler: the control.
+designs of the same count drawn from the exact sampler: the control. The
+`pool-*` columns score the candidates `sample` chose from (`pool-size` their
+mean count): no design covers better than its pool, and a piece the pool
+misses every chooser misses.
 
 **Deterministic, so no wall-clock caveats.** The same seed gives the same
 number on every machine, and the noise is the spread across seeds, which the

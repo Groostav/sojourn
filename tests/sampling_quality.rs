@@ -675,7 +675,7 @@ fn mean(values: impl Iterator<Item = f64>) -> f64 {
 
 /// Column widths match [`row`], so the file reads as text and a `git diff`
 /// lines up.
-const LEDGER_HEADER: &str = "sep=;\nversion                 ;timestamp               ;host                    ;dims ;count ;seeds ;strata-mean ;strata-worst ;levels-worst ;cl2-ratio-mean ;cl2-ratio-worst ;min-dist-mean ;min-dist-worst ;cover-mean ;cover-worst ;missing-worst ;random-cl2-ratio ;random-min-dist ;random-cover ;\n";
+const LEDGER_HEADER: &str = "sep=;\nversion                 ;timestamp               ;host                    ;dims ;count ;seeds ;strata-mean ;strata-worst ;levels-worst ;cl2-ratio-mean ;cl2-ratio-worst ;min-dist-mean ;min-dist-worst ;cover-mean ;cover-worst ;missing-worst ;random-cl2-ratio ;random-min-dist ;random-cover ;pool-size ;pool-strata ;pool-cl2-ratio ;pool-cover ;pool-missing ;\n";
 
 /// Every case of `fixture`: ten designs and ten controls per count, scored,
 /// printed, recorded, and the controls checked against what random is known
@@ -697,16 +697,25 @@ fn measure(fixture: &Fixture) -> anyhow::Result<()> {
     for case in fixture.cases {
         let count = case.count;
         let mut designs = Vec::new();
+        let mut pools = Vec::new();
+        let mut pool_sizes = Vec::new();
         for seed in 0..SEEDS {
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
             let region = ConstraintSolver::new()
                 .with_proposal_budget(common::PROPOSAL_BUDGET)
                 .solve(&system, &mut rng)?;
+            let pool = region.draw(count, &mut rng.clone());
             let design = region.sample(Mat::zeros(0, 0).as_ref(), count, &mut rng)?;
+            let candidates = columns(&pool);
             for point in columns(&design) {
                 assert!(
                     system.is_feasible(&point, 0.0),
                     "{} at seed {seed}: {point:?} is not feasible",
+                    fixture.slug
+                );
+                assert!(
+                    candidates.contains(&point),
+                    "{} at seed {seed}: {point:?} is not in the pool `draw` gave",
                     fixture.slug
                 );
             }
@@ -716,6 +725,13 @@ fn measure(fixture: &Fixture) -> anyhow::Result<()> {
                 fixture.piece,
                 &design,
             ));
+            pools.push(score(
+                &reference,
+                reference_labels.as_deref(),
+                fixture.piece,
+                &pool,
+            ));
+            pool_sizes.push(pool.ncols());
         }
         let controls: Vec<Scores> = (0..CONTROL_TRIALS)
             .map(|seed| {
@@ -734,11 +750,13 @@ fn measure(fixture: &Fixture) -> anyhow::Result<()> {
 
         let design = Summary::of(&designs);
         let control = Summary::of(&controls[..SEEDS as usize]);
+        let pool = Summary::of(&pools);
+        let pool_size = pool_sizes.iter().sum::<usize>() / pool_sizes.len();
         println!(
-            "{:<12} n={count:<4} design: {design}\n{:<12} {:<6} random: {control}",
-            fixture.slug, "", ""
+            "{:<12} n={count:<4} design: {design}\n{:<12} {:<6} random: {control}\n{:<12} {:<6} pool of {pool_size}: {pool}",
+            fixture.slug, "", "", "", ""
         );
-        record(fixture, count, &design, &control);
+        record(fixture, count, &design, &control, &pool, pool_size);
 
         // The controls check the measures, not sojourn.
         let checked = Summary::of(&controls);
@@ -823,12 +841,19 @@ impl std::fmt::Display for Summary {
 
 /// One file per fixture and count, upserted on version and host: see
 /// `common::record_row`.
-fn record(fixture: &Fixture, count: usize, design: &Summary, control: &Summary) {
+fn record(
+    fixture: &Fixture,
+    count: usize,
+    design: &Summary,
+    control: &Summary,
+    pool: &Summary,
+    pool_size: usize,
+) {
     let version = env!("CARGO_PKG_VERSION");
     let host = common::host();
     let timestamp = common::timestamp_utc();
     let row = format!(
-        "{version:<24};{timestamp:<24};{host:<24};{:<5};{count:<6};{SEEDS:<6};{:<12.4};{:<13.4};{:<13.4};{:<15.4};{:<16.4};{:<14.5};{:<15.5};{:<11.5};{:<12.5};{:<14};{:<17.4};{:<16.5};{:<13.5};",
+        "{version:<24};{timestamp:<24};{host:<24};{:<5};{count:<6};{SEEDS:<6};{:<12.4};{:<13.4};{:<13.4};{:<15.4};{:<16.4};{:<14.5};{:<15.5};{:<11.5};{:<12.5};{:<14};{:<17.4};{:<16.5};{:<13.5};{pool_size:<10};{:<12.4};{:<15.4};{:<11.5};{:<13};",
         fixture.variables.len(),
         design.strata_mean,
         design.strata_worst,
@@ -843,6 +868,10 @@ fn record(fixture: &Fixture, count: usize, design: &Summary, control: &Summary) 
         control.cl2_ratio_mean,
         control.min_distance_mean,
         control.cover_mean,
+        pool.strata_mean,
+        pool.cl2_ratio_mean,
+        pool.cover_mean,
+        pool.missing_worst,
     );
     let slug = format!("quality-{}-{count}", fixture.slug);
     if common::record_row(&slug, LEDGER_HEADER, &row) {

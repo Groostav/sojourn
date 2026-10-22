@@ -316,10 +316,12 @@ thing to read, and is the first work item rather than an admission.
 - [ ] **Sampling quality: a baseline, then a pool to choose from.** *2026-10-21.* The
       plan is `docs/sampling-quality.md`; step 1 (`sojourn::quality`, the closed-form
       fixtures, `just quality` and its ledgers) and step 2 (floors on the worst seed,
-      the stratification claim corrected) have landed. Next: `FeasibleRegion::draw`, or a
-      chooser handed to `sample`. Part two, "What farthest-first does to a design", has
-      the finding: beats random in two dimensions; in twenty it crowds the faces and
-      loses to random on CL2; no more Latin than random anywhere it has room to be.
+      the stratification claim corrected) and step 3 (`sample_with` and `Chooser`, the
+      pool measured in the ledgers) have landed. Part two, "What farthest-first does to a
+      design", has the finding: beats random in two dimensions; in twenty it crowds the
+      faces and loses to random on CL2; no more Latin than random anywhere it has room
+      to be. Open: whether `FarthestFirst`'s `2n + 128` should grow where the pool is
+      walked, since the 20-D simplex's pool is itself less even than random.
 - [ ] **Discrete variables: three things left open.** *2026-10-20.* The design and the
       reasons are in part two under "Discrete variables".
       - **Measure the hot path.** `just bench` against `e8ed673`, on the continuous-only

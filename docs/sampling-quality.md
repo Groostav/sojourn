@@ -6,7 +6,7 @@ as `docs/brute-squad.md` and `docs/knothe-rosenblatt.md` are. Measurements go in
 
 ## Context
 
-`FeasibleRegion::sample` (src/solve.rs, engine in `cvg::design`) is farthest-first over a pool:
+`FeasibleRegion::sample` (src/solve.rs, engine in `cvg::pool` and `cvg::farthest_first`) is farthest-first over a pool:
 the opening's points, a round of uniform proposals, and hit-and-run from the region's chains.
 The suite checks it with thresholds: `cvg_pools::the_pieces_of_a_region_each_receive_a_point`,
 `cvg_discrete::a_gearbox_gives_every_ratio_a_point`, and `cvg_equalities`' `Case::coverage` and
@@ -124,7 +124,7 @@ suite.
    bunch. Half right: it crowds the faces (15% of coordinates within a twentieth of one, against
    random's 10%), but its axes are less correlated than random's and its strata fill at random's
    rate. *Landed 2026-10-21; `todo.md` part two, "What farthest-first does to a design".*
-3. **`FeasibleRegion::draw` and the pool's own quality.** The candidate pool `cvg::design`
+3. **A seam to choose through, and the pool's own quality.** The candidate pool `cvg::design`
    already builds, returned without the selection, so a caller can choose from it by another
    criterion. Measured with the same fixtures: whatever is chosen from a pool can be no better
    than the pool, and a pool that misses a piece of the region loses it for every criterion.
@@ -138,8 +138,46 @@ suite.
    `&dyn` over (pool, existing, count), which keeps those semantics here. Decide with step 2's
    numbers in hand.
 
-Later, not planned here: `sample` returning a `Quality` against its own pool, once the pool is
-public and the closed-form fixtures have shown how far a pool-referenced number can be trusted.
+   *Landed 2026-10-21 as the chooser.* `FeasibleRegion::sample_with(existing, count, &dyn
+   Chooser, rng)`. A `Chooser` names its pool size (`pool_size(count)`, at least `count`) and
+   returns indices into `Candidates { system, pool, existing, whole_region }`. `sample` is
+   `sample_with(.., &FarthestFirst, ..)`. Each of the four points above stays here:
+   - the pool comes without duplicates or any of the caller's points, so a short design is
+     decided before the chooser runs: it is handed `min(count, pool)` to pick, and the region
+     reports `Exhausted` or `Degenerate` itself. That is the same condition `farthest <= 0`
+     reached, since farthest-first ran short exactly when the distinct pool outside `existing`
+     did;
+   - indices make a point the region did not judge unrepresentable;
+   - a chooser that returns the wrong count, an index past the pool, or one twice panics
+     naming it.
+
+   `cvg::design` split into `cvg::pool` and `cvg::farthest_first`. Every design column in the
+   fifteen ledgers is bit-identical across the split and the de-duplication. `draw` stays
+   `#[doc(hidden)]`, for the ledger's pool columns.
+
+   **What the pool says** (the `pool-*` columns, means over ten seeds):
+
+   | case | pool | pool CL2 | design CL2 | pool cover | design cover |
+   |---|---|---|---|---|---|
+   | box-2d, 100 | 1352 | 0.79 | 0.37 | 0.054 | 0.093 |
+   | box-20d, 100 | 737 | 1.03 | 1.89 | 1.45 | 1.72 |
+   | simplex-20d, 100 | 329 | 1.68 | 1.45 | 0.325 | 0.337 |
+   | band, 100 | 335 | 1.33 | 0.13 | 0.015 | 0.017 |
+
+   No subset covers better than its pool, and a piece the pool misses is missed by every
+   chooser. No pool missed a piece. On the 20-D box the pool is as even as random, and
+   farthest-first chooses a design less even than the pool it chose from: a criterion has room
+   there. On the 20-D simplex the pool is walked, correlated chain to chain, and only 3.3 times
+   the count. It is less even than random and covers within 4% of the design. A better choice
+   there needs a larger pool first, which is why the chooser names its own. In easy regions the
+   pool is mostly the opening's own points (1172 of 1172 on box-2d at ten), so its size is not
+   `2n + 128` there.
+
+4. **A chooser by another criterion, outside this crate.** Exchange over the pool, scored by
+   the same ledger columns, so it is compared like for like with farthest-first.
+
+Later, not planned here: `sample` returning a `Quality` against its own pool, once the
+closed-form fixtures have shown how far a pool-referenced number can be trusted.
 
 ## First measurements
 

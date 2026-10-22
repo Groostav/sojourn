@@ -13,8 +13,8 @@
 //! Finding the *first* feasible point is the hard part, and for a tight region
 //! it needs a local solve or a bisection. Once there, cheap strategies cover
 //! the space quickly. That is why `ConstraintSolver::solve` — the [`open`]
-//! — is the expensive call, bounded by its budgets, and a [`design`] from the
-//! region it found is not.
+//! — is the expensive call, bounded by its budgets, and a design ([`pool`],
+//! [`farthest_first`]) from the region it found is not.
 //!
 //! This module is the engine. The types a caller holds — the system, the
 //! solver, the region, the verdicts — are defined at the crate root
@@ -97,7 +97,7 @@ use crate::{ConstraintSystem, Point};
 /// *asked for* at hundredfold oversampling, which is the same rate.
 ///
 /// This decides nothing about who runs — a design's pool is sampled first and
-/// walked for the rest, see [`design`]. It decides only whether the opening
+/// walked for the rest, see [`pool`]. It decides only whether the opening
 /// spends its prune budget on *coverage*: chains cannot cross between a
 /// region's pieces, so a search the walker will carry needs a seed in every
 /// piece, where uniform proposals reach every piece in proportion to its
@@ -496,49 +496,42 @@ pub(crate) fn open(
     (Opening::Unproven { unexpressed }, progress)
 }
 
-/// A space-filling design of up to `count` feasible points, spread away from
-/// `existing` and from each other.
+/// Candidates beyond the region's own points for [`farthest_first`]'s design
+/// of `count`: see [`POOL_FACTOR`].
+pub(crate) const fn farthest_first_pool_size(count: usize) -> usize {
+    count * POOL_FACTOR + POOL_FLOOR
+}
+
+/// The candidates a design is chosen from: every one feasible and judged
+/// here, and no two the same point.
 ///
-/// The pool: `held` (what the opening found, the witness first), a round of
-/// uniform proposals over the box, and the walker for the rest — sampling
-/// first because it is unbiased and on a region it reaches it is the whole
-/// pool; the walker is what reaches a region sampling cannot. The walker is
-/// the region's, its chains burnt in at `solve`, cloned and reseeded here;
-/// the proposals and the walk draw from streams derived from `rng`, so the
-/// pool is a function of the region and the stream. Then farthest-first: each
-/// choice is the pool point whose nearest neighbour among `existing` and the
-/// choices so far is farthest, in box-normalised Euclidean distance, the
-/// metric `repair` lands by. With nothing to spread from, the first choice is
-/// the witness. Not a Latin hypercube: one stratifies each axis, at any count,
-/// but cannot say "far from what the caller has", which this must. Measured
-/// on regions with a known distribution (`tests/sampling_quality.rs`) it
-/// fills strata at random's rate; in twenty dimensions it puts half as many
-/// coordinates again within a twentieth of a face as random does, and its
-/// centred L2 discrepancy is about twice random's.
-///
-/// Fewer than `count` only when the region ran out of distinct points: the
-/// next choice would coincide with one already in the design, which a
-/// point-sized region reaches at once (the walker stays put, and emits the
-/// same point). Every point returned is feasible and judged here.
+/// `held` (what the opening found, the witness first), a round of `wanted`
+/// uniform proposals over the box, and the walker for the rest of `wanted`
+/// — sampling first because it is unbiased and on a region it reaches it is
+/// the whole pool; the walker is what reaches a region sampling cannot. The
+/// walker is the region's, its chains burnt in at `solve`, cloned and
+/// reseeded here; the proposals and the walk draw from streams derived from
+/// `rng`, so the pool is a function of the region, `wanted` and the stream.
+/// Duplicates, which a walker that stays put emits and the opening's points
+/// can repeat, are dropped after the first, by [`identity`]; the witness
+/// stays at the front.
 ///
 /// **A small lattice is enumerated instead.** Where every variable is
 /// discrete and the lattice holds at most [`ENUMERATION_LIMIT`] points, the
 /// pool is `held` and then every feasible point of it, each judged — no
-/// sampling and no walk, so `rng` is not drawn from. The pool is then the
-/// whole region, and a design that runs short of `count` has every point
-/// the region has, which [`Design::enumerated`] says.
-pub(crate) fn design(
+/// sampling and no walk, so `rng` is not drawn from and `wanted` is moot.
+/// The pool is then the whole region, which [`Pool::enumerated`] says.
+pub(crate) fn pool(
     problem: &ConstraintSystem,
     walker: &HitAndRunWalker,
     held: &[Point],
-    existing: &[Point],
-    count: usize,
-    mut rng: Xoshiro256PlusPlus,
-) -> Design {
-    let _span = tracing::debug_span!("design", count, existing = existing.len()).entered();
-    if count == 0 || held.is_empty() {
-        return Design {
-            chosen: Vec::new(),
+    wanted: usize,
+    rng: &mut Xoshiro256PlusPlus,
+) -> Pool {
+    let _span = tracing::debug_span!("pool", wanted).entered();
+    if wanted == 0 || held.is_empty() {
+        return Pool {
+            points: Vec::new(),
             enumerated: false,
         };
     }
@@ -564,9 +557,6 @@ pub(crate) fn design(
     let mut pool: Vec<Point> = held.to_vec();
     let enumerated = lattice.is_some();
     if let Some((radix, size)) = lattice {
-        let bits =
-            |point: &Point| -> Vec<u64> { point.iter().map(|value| value.to_bits()).collect() };
-        let known: std::collections::HashSet<Vec<u64>> = held.iter().map(bits).collect();
         // Mixed radix, the first row varying fastest: row `r` steps once
         // every `strides[r]` points. No product overflows, since the last is
         // `size`.
@@ -584,18 +574,13 @@ pub(crate) fn design(
                 let k = (first + column) / strides[row] % radix[row].count();
                 radix[row].level(k)
             });
-            pool.extend(
-                problem
-                    .feasible_columns(batch.as_ref())
-                    .into_iter()
-                    .filter(|point| !known.contains(&bits(point))),
-            );
+            pool.extend(problem.feasible_columns(batch.as_ref()));
         }
         tracing::debug!(lattice = size, feasible = pool.len(), "enumerated");
     } else {
         let mut sampler = RandomSampler::new(
             &problem.supports,
-            Xoshiro256PlusPlus::from_rng(&mut rng),
+            Xoshiro256PlusPlus::from_rng(&mut *rng),
             0,
             1,
             crate::solve::GpuTarget::Off,
@@ -603,9 +588,8 @@ pub(crate) fn design(
         );
         let mut walker = walker
             .clone()
-            .reseeded(Xoshiro256PlusPlus::from_rng(&mut rng));
+            .reseeded(Xoshiro256PlusPlus::from_rng(&mut *rng));
 
-        let wanted = count * POOL_FACTOR + POOL_FLOOR;
         let trial = sampler.deliver(problem, wanted);
         let sampled = trial.points.len();
         pool.extend(trial.points);
@@ -617,7 +601,59 @@ pub(crate) fn design(
         tracing::debug!(sampled, walked = walked.len(), "pooled");
         pool.extend(walked);
     }
+    let widths = widths(problem);
+    let mut seen = std::collections::HashSet::new();
+    pool.retain(|point| seen.insert(identity(&widths, point)));
+    Pool {
+        points: pool,
+        enumerated,
+    }
+}
 
+/// What makes two points the same point: their values on every axis with
+/// width, `-0.0` read as `0.0`. Exactly when [`normalised_distance`] between
+/// them is zero, short of a difference so small that dividing it by the
+/// width underflows.
+pub(crate) fn identity(widths: &[f64], point: &[f64]) -> Vec<u64> {
+    point
+        .iter()
+        .zip(widths)
+        .filter(|(_, width)| **width > 0.0)
+        .map(|(value, _)| (value + 0.0).to_bits())
+        .collect()
+}
+
+/// What [`pool`] drew, and whether it was the whole region.
+pub(crate) struct Pool {
+    pub(crate) points: Vec<Point>,
+    /// The pool is every feasible point of a lattice, so a design chosen
+    /// from it that is shorter than asked holds every point the region has.
+    pub(crate) enumerated: bool,
+}
+
+/// Up to `count` points of `pool`, spread away from `existing` and from each
+/// other: each choice is the candidate whose nearest neighbour among
+/// `existing` and the choices so far is farthest, in box-normalised
+/// Euclidean distance, the metric `repair` lands by. With nothing to spread
+/// from, the first choice is the front of the pool, which [`pool`] makes the
+/// witness. Not a Latin hypercube: one stratifies each axis, at any count,
+/// but cannot say "far from what the caller has", which this must. Measured
+/// on regions with a known distribution (`tests/sampling_quality.rs`) it
+/// fills strata at random's rate; in twenty dimensions it puts half as many
+/// coordinates again within a twentieth of a face as random does, and its
+/// centred L2 discrepancy is about twice random's.
+///
+/// Indices into `pool`, in the order chosen. Fewer than `count` only when
+/// every candidate left is at distance zero from one already chosen or
+/// given, which a pool of distinct points with the caller's own taken out
+/// reaches only past `pool.len()`.
+pub(crate) fn farthest_first(
+    problem: &ConstraintSystem,
+    pool: &[Point],
+    existing: &[Point],
+    count: usize,
+) -> Vec<usize> {
+    let _span = tracing::debug_span!("farthest_first", count, existing = existing.len()).entered();
     let widths = widths(problem);
     let mut nearest: Vec<f64> = pool
         .iter()
@@ -628,7 +664,7 @@ pub(crate) fn design(
                 .fold(f64::INFINITY, f64::min)
         })
         .collect();
-    let mut chosen: Vec<Point> = Vec::with_capacity(count);
+    let mut chosen: Vec<usize> = Vec::with_capacity(count);
     while chosen.len() < count {
         // `max_by` keeps the last of equal maxima; with nothing to spread
         // from every candidate is infinitely far, and the one to take is the
@@ -648,22 +684,14 @@ pub(crate) fn design(
         if farthest <= 0.0 {
             break;
         }
-        let choice = pool[index].clone();
+        let choice = &pool[index];
         for (candidate, nearest) in pool.iter().zip(&mut nearest) {
-            *nearest = nearest.min(normalised_distance(&widths, candidate, &choice));
+            *nearest = nearest.min(normalised_distance(&widths, candidate, choice));
         }
-        chosen.push(choice);
+        chosen.push(index);
     }
     tracing::debug!(chosen = chosen.len(), pool = pool.len(), "designed");
-    Design { chosen, enumerated }
-}
-
-/// What [`design`] chose, and whether its pool was the whole region.
-pub(crate) struct Design {
-    pub(crate) chosen: Vec<Point>,
-    /// The pool was every feasible point of a lattice, so a design shorter
-    /// than asked holds every point the region has.
-    pub(crate) enumerated: bool,
+    chosen
 }
 
 /// Each variable's box width, the scale [`normalised_distance`] divides by.

@@ -627,6 +627,95 @@ pub enum SampleError {
     Exhausted { found: Mat<f64>, wanted: usize },
 }
 
+/// How a design is chosen from the candidates a region draws, for
+/// [`FeasibleRegion::sample_with`].
+///
+/// The region draws the pool and the chooser picks from it by index, so a
+/// chooser cannot return a point the region did not judge feasible. What a
+/// short design means stays the region's to say: it hands the chooser
+/// `min(count, candidates)` to pick, and reports the shortfall as
+/// [`SampleError::Exhausted`] or [`SampleError::Degenerate`] itself.
+/// [`FarthestFirst`] is the chooser [`FeasibleRegion::sample`] uses.
+///
+/// A chooser that breaks the contract — the wrong number of indices, one
+/// past the pool, one twice, or a pool smaller than the design — is a bug in
+/// the chooser, and the region panics naming it.
+pub trait Chooser {
+    /// Candidates to draw beyond the region's own points for a design of
+    /// `count`, at least `count`. The walk that draws them is the cost of a
+    /// design, so this is the chooser's budget: a criterion that needs more
+    /// room to choose asks for it here. Moot where the region is a small
+    /// lattice, which is enumerated whole.
+    fn pool_size(&self, count: usize) -> usize;
+
+    /// Exactly `count` distinct indices into `candidates.pool`, the design
+    /// in the order the chooser ranks it. `count` is never more than the
+    /// pool holds. `rng` is the design's own stream, drawn after the pool's:
+    /// a chooser that draws nothing from it leaves the pool as it was.
+    fn choose(
+        &self,
+        candidates: &Candidates<'_>,
+        count: usize,
+        rng: &mut Xoshiro256PlusPlus,
+    ) -> Vec<usize>;
+}
+
+/// What a [`Chooser`] chooses from.
+#[derive(Debug, Clone, Copy)]
+pub struct Candidates<'a> {
+    /// The system the region was solved over: its supports are the box a
+    /// criterion normalises by.
+    pub system: &'a ConstraintSystem,
+    /// One column per candidate, every one feasible, no two the same point
+    /// and none the same as a column of `existing`. The witness is the first
+    /// column unless the caller already has it.
+    pub pool: MatRef<'a, f64>,
+    /// The caller's own points, to spread from: no columns, or one row per
+    /// variable.
+    pub existing: MatRef<'a, f64>,
+    /// The pool is every feasible point of a lattice, enumerated: there is
+    /// nothing else to choose.
+    pub whole_region: bool,
+}
+
+/// Farthest-first: each point the candidate whose nearest neighbour among
+/// the caller's points and those chosen so far is farthest, in Euclidean
+/// distance over box-normalised coordinates, from a pool of twice the count
+/// plus a hundred and twenty-eight. Draws nothing from the design's stream.
+/// The chooser [`FeasibleRegion::sample`] uses; its quality is measured in
+/// `docs/sampling-quality.md`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FarthestFirst;
+
+impl Chooser for FarthestFirst {
+    fn pool_size(&self, count: usize) -> usize {
+        cvg::farthest_first_pool_size(count)
+    }
+
+    fn choose(
+        &self,
+        candidates: &Candidates<'_>,
+        count: usize,
+        _rng: &mut Xoshiro256PlusPlus,
+    ) -> Vec<usize> {
+        let points = |matrix: MatRef<'_, f64>| -> Vec<Point> {
+            (0..matrix.ncols())
+                .map(|column| {
+                    (0..matrix.nrows())
+                        .map(|row| matrix[(row, column)])
+                        .collect()
+                })
+                .collect()
+        };
+        cvg::farthest_first(
+            candidates.system,
+            &points(candidates.pool),
+            &points(candidates.existing),
+            count,
+        )
+    }
+}
+
 /// A solved region: the system a search found feasible points in, and those
 /// points.
 ///
@@ -825,6 +914,36 @@ impl FeasibleRegion {
         count: usize,
         rng: &mut R,
     ) -> Result<Mat<f64>, SampleError> {
+        self.sample_with(existing, count, &FarthestFirst, rng)
+    }
+
+    /// A design of `count` points chosen by `chooser` from candidates this
+    /// region draws, spread from `existing`, which it never repeats.
+    ///
+    /// The region draws `chooser.pool_size(count)` candidates beyond its own
+    /// points, as [`sample`](Self::sample) describes, drops repeats and any
+    /// that coincide with a column of `existing`, and hands the chooser the
+    /// rest with `min(count, pool)` to pick. The generator's state decides
+    /// the pool, and a stream drawn after it is the chooser's; so the design
+    /// is a function of this region, `existing`, `count`, the chooser and
+    /// `rng`'s state, as `sample`'s is.
+    ///
+    /// # Errors
+    /// As [`sample`](Self::sample): the pool held fewer than `count`
+    /// candidates, and the error carries the chooser's design of all of them.
+    ///
+    /// # Panics
+    /// If `existing` has columns but not one row per variable, as `sample`.
+    /// If the chooser breaks its contract: a pool size below `count`, or
+    /// other than exactly the indices asked for, each into the pool and
+    /// none twice.
+    pub fn sample_with<R: Rng + ?Sized>(
+        &self,
+        existing: MatRef<'_, f64>,
+        count: usize,
+        chooser: &dyn Chooser,
+        rng: &mut R,
+    ) -> Result<Mat<f64>, SampleError> {
         let _span = tracing::debug_span!("sample", count, existing = existing.ncols()).entered();
         let rows = self.system.variables.len();
         assert!(
@@ -832,20 +951,65 @@ impl FeasibleRegion {
             "a design has one row per variable of the system it is sampled from, not {}",
             existing.nrows()
         );
-        let anchors: Vec<Point> = (0..existing.ncols())
-            .map(|column| (0..rows).map(|row| existing[(row, column)]).collect())
-            .collect();
-        let cvg::Design { chosen, enumerated } = cvg::design(
-            &self.system,
-            &self.walker,
-            &self.points,
-            &anchors,
-            count,
-            Xoshiro256PlusPlus::from_rng(rng),
+        let mut stream = Xoshiro256PlusPlus::from_rng(rng);
+        if count == 0 {
+            return Ok(Mat::zeros(rows, 0));
+        }
+        let size = chooser.pool_size(count);
+        assert!(
+            size >= count,
+            "the chooser asked for {size} candidates for a design of {count}"
         );
-        let found = Mat::from_fn(rows, chosen.len(), |row, column| chosen[column][row]);
+
+        let pool = cvg::pool(&self.system, &self.walker, &self.points, size, &mut stream);
+        let widths = cvg::widths(&self.system);
+        let given: std::collections::HashSet<Vec<u64>> = (0..existing.ncols())
+            .map(|column| {
+                let point: Point = (0..rows).map(|row| existing[(row, column)]).collect();
+                cvg::identity(&widths, &point)
+            })
+            .collect();
+        let candidates: Vec<&Point> = pool
+            .points
+            .iter()
+            .filter(|point| !given.contains(&cvg::identity(&widths, point)))
+            .collect();
+        let pool_matrix = Mat::from_fn(rows, candidates.len(), |row, column| {
+            candidates[column][row]
+        });
+
+        let wanted = count.min(candidates.len());
+        let chosen = chooser.choose(
+            &Candidates {
+                system: &self.system,
+                pool: pool_matrix.as_ref(),
+                existing,
+                whole_region: pool.enumerated,
+            },
+            wanted,
+            &mut stream,
+        );
+        assert!(
+            chosen.len() == wanted,
+            "the chooser returned {} indices for a design of {wanted}",
+            chosen.len()
+        );
+        let mut taken = vec![false; candidates.len()];
+        for &index in &chosen {
+            assert!(
+                index < candidates.len(),
+                "the chooser returned index {index}, past a pool of {}",
+                candidates.len()
+            );
+            assert!(!taken[index], "the chooser returned index {index} twice");
+            taken[index] = true;
+        }
+
+        let found = Mat::from_fn(rows, chosen.len(), |row, column| {
+            candidates[chosen[column]][row]
+        });
         if chosen.len() < count {
-            return Err(if enumerated {
+            return Err(if pool.enumerated {
                 SampleError::Exhausted {
                     found,
                     wanted: count,
@@ -858,5 +1022,29 @@ impl FeasibleRegion {
             });
         }
         Ok(found)
+    }
+
+    /// The candidates [`sample`](Self::sample) would choose a design of
+    /// `count` from with nothing given to spread from, one column per
+    /// candidate, every one feasible and distinct: drawn from `rng` exactly
+    /// as `sample` draws it, so on the same generator state this is the pool
+    /// that design came from.
+    ///
+    /// Hidden, for `tests/sampling_quality.rs` to measure the pool by: a
+    /// caller chooses through [`sample_with`](Self::sample_with), which keeps
+    /// what a short design means here.
+    #[doc(hidden)]
+    pub fn draw<R: Rng + ?Sized>(&self, count: usize, rng: &mut R) -> Mat<f64> {
+        let pool = cvg::pool(
+            &self.system,
+            &self.walker,
+            &self.points,
+            cvg::farthest_first_pool_size(count),
+            &mut Xoshiro256PlusPlus::from_rng(rng),
+        );
+        let rows = self.system.variables.len();
+        Mat::from_fn(rows, pool.points.len(), |row, column| {
+            pool.points[column][row]
+        })
     }
 }

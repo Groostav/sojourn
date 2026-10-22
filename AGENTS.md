@@ -195,7 +195,7 @@ does afterwards is a function of the region: it keeps one stream from the
 ladder (drawn last, after the strategies' and the burn-in's) for its
 reference point's extra starts and for every repair's sampling box, which
 draws from a clone — so `repair` is the same landing every call, and no
-constant seed hides anywhere in the crate. A design (`cvg::design`, `FeasibleRegion::sample`) is a pure
+constant seed hides anywhere in the crate. A design (`cvg::pool` then `cvg::farthest_first`, `FeasibleRegion::sample`) is a pure
 function of the region, the caller's existing points, the count and the
 generator's state: a fresh sampler and a clone of the region's walker per
 call, a pool of candidates, farthest-first selection in box-normalised
@@ -204,7 +204,12 @@ a Latin hypercube, and no more stratified than random. A Latin hypercube's
 one-axis guarantee holds at any count, so "fewer points than variables" is
 not the reason; "far from what I have", which it cannot state, is. In twenty
 dimensions farthest-first crowds the box's faces and loses to random on
-discrepancy: `just quality` measures it, and its floors guard it.
+discrepancy: `just quality` measures it, and its floors guard it. Another
+criterion chooses through `sample_with` and a `dyn Chooser`, which names its
+pool size and returns indices into a pool the region drew, de-duplicated and
+with the caller's points taken out; the region still decides `Exhausted`
+against `Degenerate`, before the chooser runs. Keep those decisions on this
+side of the trait.
 
 **A discrete variable takes its levels and nothing between them.** An
 `InputVariable` declares a `Domain`: `Continuous`, `Stepped` (a lattice), or

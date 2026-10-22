@@ -122,8 +122,9 @@ pub use eval::{CompiledExpression, CompiledGradient, Compiler, Gradient, compile
 pub use nodes::{CompiledNode, Symbol, compile_system};
 pub use repair::RepairError;
 pub use solve::{
-    ConstraintSolver, DEFAULT_GPU_PROPOSAL_BUDGET, DEFAULT_PROPOSAL_BUDGET, DEFAULT_PRUNE_BUDGET,
-    FeasibleRegion, GPU_VARIABLE, GpuTarget, Infeasibility, SampleError,
+    Candidates, Chooser, ConstraintSolver, DEFAULT_GPU_PROPOSAL_BUDGET, DEFAULT_PROPOSAL_BUDGET,
+    DEFAULT_PRUNE_BUDGET, FarthestFirst, FeasibleRegion, GPU_VARIABLE, GpuTarget, Infeasibility,
+    SampleError,
 };
 pub use system::{ConstraintRef, ConstraintSystem, Domain, InputVariable, Point, SystemError};
 

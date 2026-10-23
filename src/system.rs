@@ -287,6 +287,16 @@ pub enum SystemError {
     /// reading, so asserting one would invent a constraint nobody wrote.
     #[error("{constraint} is a scalar expression, not a constraint: it has no truth value")]
     NotAConstraint { constraint: ConstraintRef },
+    /// `1 > 2`: a constraint that names no variable is a constant, and this
+    /// one is false, so no point satisfies the system. Refused here rather
+    /// than left to [`solve`](crate::ConstraintSolver::solve) because one
+    /// evaluation proves it, and because the search never would: its
+    /// contraction is driven by coordinates moving and its blame is traced
+    /// through coordinates, so a constraint with none came back `NotFound`,
+    /// or `Proved` blaming nothing. A constant that holds constrains nothing
+    /// and is kept.
+    #[error("{constraint} names no variable and does not hold, so no point satisfies it")]
+    NeverHolds { constraint: ConstraintRef },
     /// `x == sin(x)`, `x2 == x1 + x2/2 - x3/x4` — a variable named on both sides,
     /// so the equality is *implicit* in it: no reading of it yields `v = ...`.
     /// Rows C and F of the equality taxonomy, which turned out to be one thing.
@@ -408,6 +418,19 @@ impl ConstraintSystem {
                     constraint: named,
                     variable: constraint.symbols()[variable.index()].clone(),
                 });
+            }
+
+            // A constraint that names no variable reads nothing of the point,
+            // so one evaluation, anywhere, decides it everywhere — by the
+            // oracle's own reading, a fault being a failure.
+            if constraint.symbols().is_empty() && !constraint.contains_dynamic_lookup() {
+                let anywhere: Vec<f64> = supports.iter().map(VariableSupport::lower).collect();
+                if !tape
+                    .eval_row(&anywhere)
+                    .is_ok_and(|residual| residual <= 0.0)
+                {
+                    return Err(SystemError::NeverHolds { constraint: named });
+                }
             }
             resolved.push(constraint);
             compiled.push(tape);
@@ -777,6 +800,57 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(failure.problems[0].span, Span::new(9, 10));
+    }
+
+    /// A constraint that names no variable is a constant, and one that is
+    /// false is refused by name: no point satisfies it, and the search,
+    /// which is driven by coordinates moving, would never look at it.
+    #[test]
+    fn a_constraint_that_names_no_variable_and_never_holds_is_refused() {
+        // setup
+        let cases: [(Vec<InputVariable>, [&str; 2]); 3] = [
+            (
+                vec![InputVariable::new_continuous("x1", -1.0, 1.0)],
+                ["x1 > 0", "1 > 2"],
+            ),
+            (
+                vec![InputVariable::new_discrete("n", 0.0, 1.0, 3.0)],
+                ["n >= 0", "1 > 2"],
+            ),
+            (
+                vec![InputVariable::new_continuous("x1", -1.0, 1.0)],
+                ["x1 > 0", "2 * 3 == 5 +/- 0.5"],
+            ),
+        ];
+
+        for (variables, sources) in cases {
+            // act
+            let error = ConstraintSystem::new(variables, sources)
+                .expect_err("the second constraint never holds");
+
+            // assert
+            let SystemError::NeverHolds { constraint } = error else {
+                panic!("expected NeverHolds for {sources:?}, got {error:?}");
+            };
+            assert_eq!(constraint.index, 1);
+            assert_eq!(constraint.source, sources[1]);
+        }
+    }
+
+    /// A constant that holds constrains nothing, and is kept: a template with
+    /// every variable substituted out of one of its constraints still binds.
+    #[test]
+    fn a_constraint_that_names_no_variable_and_always_holds_is_kept() {
+        // setup, act
+        let system = ConstraintSystem::new(
+            vec![InputVariable::new_continuous("x1", -1.0, 1.0)],
+            ["x1 > 0", "1 < 2"],
+        )
+        .expect("a true constant binds");
+
+        // assert
+        assert!(system.is_feasible(&[0.5], 0.0));
+        assert!(!system.is_feasible(&[-0.5], 0.0));
     }
 
     fn one_variable(source: &str) -> ConstraintSystem {

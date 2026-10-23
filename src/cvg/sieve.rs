@@ -305,14 +305,14 @@ const BINDINGS: [Binding; 6] = [
         slot: Slot::Bounds,
         name: "bounds",
         space: "storage, read",
-        ty: "array<vec4<f32>>",
+        ty: "array<Row>",
         access: Access::Storage { read_only: true },
     },
     Binding {
         slot: Slot::Survivors,
         name: "survivors",
         space: "storage, read_write",
-        ty: "array<f32>",
+        ty: "array<u32>",
         access: Access::Storage { read_only: false },
     },
     Binding {
@@ -364,10 +364,7 @@ pub(crate) struct Sieve {
     generated: wgpu::ComputePipeline,
     given: wgpu::ComputePipeline,
     params: wgpu::Buffer,
-    /// One row per variable: `(lower, upper, count, offset)`, the last two
-    /// `u32`s carried in `f32` bits. A count of zero is a continuous row,
-    /// drawn over its bounds; otherwise the row's levels are `count` entries
-    /// of `levels` from `offset`.
+    /// One [`Row`] per variable.
     bounds: wgpu::Buffer,
     /// Every discrete row's levels, narrowed to `f32`, back to back.
     levels: wgpu::Buffer,
@@ -392,11 +389,16 @@ impl Sieve {
         // tabulate — or to index in the `f32` the draw scales by — keeps
         // brute force on the CPU, which draws it by arithmetic.
         let mut levels: Vec<f32> = Vec::new();
-        let mut rows: Vec<[f32; 4]> = Vec::with_capacity(problem.supports.len());
+        let mut rows: Vec<Row> = Vec::with_capacity(problem.supports.len());
         for support in &problem.supports {
             match support {
                 VariableSupport::Continuous { lower, upper } => {
-                    rows.push([narrow(*lower), narrow(*upper), 0.0, 0.0]);
+                    rows.push(Row {
+                        lower: narrow(*lower),
+                        upper: narrow(*upper),
+                        count: 0,
+                        offset: 0,
+                    });
                 }
                 VariableSupport::Discrete(held) => {
                     if levels.len() + held.count() > LEVEL_TABLE_LIMIT {
@@ -409,12 +411,12 @@ impl Sieve {
                     let count = u32::try_from(held.count()).expect("below the table limit");
                     let offset = u32::try_from(levels.len()).expect("below the table limit");
                     levels.extend((0..held.count()).map(|k| narrow(held.level(k))));
-                    rows.push([
-                        narrow(support.lower()),
-                        narrow(support.upper()),
-                        f32::from_bits(count),
-                        f32::from_bits(offset),
-                    ]);
+                    rows.push(Row {
+                        lower: narrow(support.lower()),
+                        upper: narrow(support.upper()),
+                        count,
+                        offset,
+                    });
                 }
             }
         }
@@ -495,7 +497,7 @@ impl Sieve {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("bounds"),
-                contents: &bytes_of_f32(rows.into_iter().flatten()),
+                contents: &rows.iter().flat_map(Row::bytes).collect::<Vec<u8>>(),
                 usage: wgpu::BufferUsages::STORAGE,
             });
         let levels = gpu
@@ -757,6 +759,30 @@ fn narrow(value: f64) -> f32 {
     value as f32
 }
 
+/// One variable as the harness's `Row` reads it. A count of zero is a
+/// continuous row, drawn over its bounds; otherwise the row's levels are
+/// `count` entries of `levels` from `offset`. The integers stay integers on
+/// the device: one carried in an `f32`'s bits is a subnormal below `2^23`,
+/// which a device may flush to zero.
+struct Row {
+    lower: f32,
+    upper: f32,
+    count: u32,
+    offset: u32,
+}
+
+impl Row {
+    /// The struct's layout in WGSL: four 4-byte fields, no padding.
+    fn bytes(&self) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        bytes[0..4].copy_from_slice(&self.lower.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.upper.to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.count.to_le_bytes());
+        bytes[12..16].copy_from_slice(&self.offset.to_le_bytes());
+        bytes
+    }
+}
+
 fn bytes_of_f32(values: impl Iterator<Item = f32>) -> Vec<u8> {
     let mut bytes = Vec::new();
     for value in values {
@@ -791,6 +817,44 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), super::BINDINGS.len());
+    }
+
+    /// A count, an offset or a lane carried in an `f32`'s bits is a
+    /// subnormal for every value below `2^23`, and WGSL lets a device flush
+    /// subnormals to zero: a flushed count draws a discrete row over its
+    /// bounds, and a flushed lane points every survivor at column zero. So
+    /// the harness holds integers as integers and never bitcasts one into a
+    /// float, which is a property of the text, checked without an adapter.
+    #[test]
+    fn the_harness_never_carries_an_integer_in_a_float() {
+        // setup
+        let problem = system(
+            vec![
+                InputVariable::new("ratio", crate::Domain::Levels(vec![1.0, 2.0, 4.0])),
+                InputVariable::new_continuous("speed", 0.0, 100.0),
+            ],
+            &["speed / ratio >= 20"],
+        );
+
+        // act
+        let source = super::shader(&problem);
+
+        // assert
+        assert!(
+            !source.contains("bitcast<f32>"),
+            "an integer stored as float bits"
+        );
+        assert!(
+            !source.contains("bitcast<u32>(b."),
+            "a row's count or offset read from float bits"
+        );
+        let module = naga::front::wgsl::parse_str(&source).expect("the harness parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("the harness validates");
     }
 
     #[test]

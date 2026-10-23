@@ -661,6 +661,35 @@ fn a_repair_of_discrete_variables_alone_is_the_nearest_lattice_point() -> anyhow
     Ok(())
 }
 
+/// The search over levels is bounded even where nothing near the point can
+/// land. From the origin each row's nearest sixty-four levels are `0..=63`,
+/// so no assignment the search can list sums past `6·63 = 378`, short of the
+/// `540` the constraint asks for, and every one contracts to nothing. There
+/// are `64^6` of them; the search must give up on them and fall back to the
+/// reference's own levels, which land by construction.
+#[test]
+fn a_repair_whose_nearby_levels_all_contract_away_still_returns() -> anyhow::Result<()> {
+    // setup
+    let mut variables: Vec<InputVariable> = (1..=6)
+        .map(|i| InputVariable::new_discrete(format!("k{i}"), 0.0, 1.0, 99.0))
+        .collect();
+    variables.push(InputVariable::new_continuous("y", 0.0, 1.0));
+    let system = system(variables, &["k1 + k2 + k3 + k4 + k5 + k6 + y >= 540"])?;
+    let region = region(&system)?;
+    let origin = [0.0; 7];
+
+    // act
+    let repaired = region.repair(&origin, 0.0)?;
+
+    // assert
+    assert!(
+        system.is_feasible(&repaired, 0.0),
+        "the fallback lands: {repaired:?}"
+    );
+    assert_eq!(region.repair(&origin, 0.0)?, repaired);
+    Ok(())
+}
+
 // --- Determinism ------------------------------------------------------------
 
 /// The same generator state designs the same points, discrete draws and all.

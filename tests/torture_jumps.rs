@@ -385,6 +385,9 @@ fn a_region_of_measure_zero_is_never_proved_empty() -> anyhow::Result<()> {
             Err(RepairError::Stranded) => {
                 panic!("the witness is a thousandth of the box from {proposal} and was not reached")
             }
+            Err(error @ RepairError::NotFinite { .. }) => {
+                panic!("the proposal is finite by construction: {error}")
+            }
         }
     }
     match region.sample(Mat::zeros(0, 0).as_ref(), 4, &mut rng()) {
@@ -834,6 +837,9 @@ fn a_checkerboard_is_covered_by_a_design_and_repaired_to_its_cells() -> anyhow::
         }
         Ok(landed) => panic!("no cell is wide enough for a clearance of 0.06, yet {landed:?}"),
         Err(RepairError::Stranded) => panic!("a quarter of the box is feasible"),
+        Err(error @ RepairError::NotFinite { .. }) => {
+            panic!("the proposal is finite by construction: {error}")
+        }
     }
     Ok(())
 }

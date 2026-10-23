@@ -21,6 +21,17 @@ struct Params {
     pad0: u32,
     pad1: u32,
 }
+
+// A variable: a count of zero is a continuous row, drawn over its bounds;
+// otherwise a level, drawn by index from `count` entries of `levels` from
+// `offset`. Integers as integers: one carried in an f32's bits is a
+// subnormal, which a device may flush to zero.
+struct Row {
+    lower: f32,
+    upper: f32,
+    count: u32,
+    offset: u32,
+}
 {% for b in bindings %}
 @group(0) @binding({{ b.index() }}) var<{{ b.space }}> {{ b.name }}: {{ b.ty }};
 {%- endfor %}
@@ -61,9 +72,10 @@ fn keep(lane: u32, x: ptr<function, array<f32, {{ n }}>>) {
     let slot = atomicAdd(&taken, 1u);
     if slot < params.capacity {
         let at = slot * (N + 1u);
-        survivors[at] = bitcast<f32>(lane);
+        // The lane as an integer, and each coordinate's bits beside it.
+        survivors[at] = lane;
         for (var i = 0u; i < N; i = i + 1u) {
-            survivors[at + 1u + i] = (*x)[i];
+            survivors[at + 1u + i] = bitcast<u32>((*x)[i]);
         }
     }
 }
@@ -76,17 +88,13 @@ fn sieve_generated(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var x: array<f32, {{ n }}>;
     for (var i = 0u; i < N; i = i + 1u) {
-        // (lower, upper, count, offset): a count of zero is a continuous
-        // row, drawn over its bounds; otherwise a level, drawn by index from
-        // the row's stretch of the table.
-        let b = bounds[i];
+        let row = bounds[i];
         let u = draw(lane, i);
-        let count = bitcast<u32>(b.z);
-        if count == 0u {
-            x[i] = b.x + u * (b.y - b.x);
+        if row.count == 0u {
+            x[i] = row.lower + u * (row.upper - row.lower);
         } else {
-            let k = min(u32(u * f32(count)), count - 1u);
-            x[i] = levels[bitcast<u32>(b.w) + k];
+            let k = min(u32(u * f32(row.count)), row.count - 1u);
+            x[i] = levels[row.offset + k];
         }
     }
     if residual(&x) <= 0.0 {

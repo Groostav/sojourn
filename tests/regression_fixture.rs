@@ -942,6 +942,9 @@ mod a_wall_coordinate_in_no_constraint_stays_put {
             Ok(repaired) => repaired,
             Err(RepairError::Cramped { nearest, .. }) => nearest,
             Err(RepairError::Stranded) => anyhow::bail!("stranded on a slab with room"),
+            Err(error @ RepairError::NotFinite { .. }) => {
+                anyhow::bail!("the proposal is finite by construction: {error}")
+            }
         };
         assert!(
             system.is_feasible(&repaired, CLEARANCE),

@@ -221,6 +221,14 @@ const SAMPLING_ROUNDS: usize = 20;
 /// than the best landing, which is usually the second.
 const LEVEL_SEARCH_BUDGET: usize = 64;
 
+/// The most assignments of levels a repair rules out by contraction before
+/// it stops looking: a count of its own, because ruling one out costs a
+/// contraction where running one costs a repair, and because without it a
+/// search whose every nearby assignment contracts to nothing walks the
+/// product of sixty-four levels per discrete variable — `64^6` on six of
+/// them, which is a hang. Sixteen for every assignment run.
+const LEVEL_RULE_OUT_BUDGET: usize = 16 * LEVEL_SEARCH_BUDGET;
+
 /// Draws per round of the sampling box, judged one by one.
 const SAMPLING_DRAWS: usize = 256;
 
@@ -253,6 +261,12 @@ pub enum RepairError {
         "a feasible point was reached but none with clearance {clearance}; the feasible room is          narrower than the clearance asked for, so try a smaller one"
     )]
     Cramped { nearest: Point, clearance: f64 },
+    /// The point has a coordinate that is not finite: no point is nearest to
+    /// it, so there is nothing to land on. `variable` is the first such
+    /// coordinate's name. Refused before any search, so `value` is the
+    /// caller's, as handed in.
+    #[error("variable {variable:?} is {value}; a point to repair must be finite")]
+    NotFinite { variable: String, value: f64 },
 }
 
 /// A point that satisfies `system` with `clearance` to spare, near `point`,
@@ -277,7 +291,8 @@ pub enum RepairError {
 /// than the best landing so far is the only kind that can beat it, so the
 /// search stops at the first one that is not; [`LEVEL_SEARCH_BUDGET`]
 /// bounds it otherwise. One whose pinned box contracts to nothing is ruled
-/// out without spending a repair on it, and does not count. The reference's
+/// out without spending a repair on it, and counts against
+/// [`LEVEL_RULE_OUT_BUDGET`] instead. The reference's
 /// own levels are tried last if nothing landed, since its assignment has a
 /// feasible point by construction.
 pub(crate) fn repair(
@@ -297,6 +312,19 @@ pub(crate) fn repair(
         clearance.is_finite() && clearance >= 0.0,
         "a clearance is a non-negative fraction of the box width, not {clearance}"
     );
+    // An error rather than a panic: the point is the caller's data, where the
+    // length and the clearance above are its code.
+    if let Some((variable, value)) = system
+        .variables()
+        .iter()
+        .zip(point)
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(RepairError::NotFinite {
+            variable: variable.name.clone(),
+            value: *value,
+        });
+    }
 
     let discrete: Vec<(usize, &Levels)> = system
         .supports
@@ -394,8 +422,12 @@ pub(crate) fn repair(
     let mut outcomes: Vec<Result<Point, RepairError>> = Vec::new();
     let mut landed = f64::INFINITY;
     let mut tried = 0;
+    let mut ruled_out = 0;
     for (squared, indices) in Assignments::new(costs) {
-        if tried >= LEVEL_SEARCH_BUDGET || squared.sqrt() >= landed {
+        if tried >= LEVEL_SEARCH_BUDGET
+            || ruled_out >= LEVEL_RULE_OUT_BUDGET
+            || squared.sqrt() >= landed
+        {
             break;
         }
         let assignment: Vec<f64> = indices
@@ -404,6 +436,7 @@ pub(crate) fn repair(
             .map(|(index, list)| list[*index].0)
             .collect();
         let Some(outcome) = attempt(&assignment) else {
+            ruled_out += 1;
             continue;
         };
         tried += 1;
@@ -416,7 +449,12 @@ pub(crate) fn repair(
         let own: Vec<f64> = discrete.iter().map(|(row, _)| reference[*row]).collect();
         outcomes.extend(attempt(&own));
     }
-    tracing::debug!(tried, landed = landed.is_finite(), "searched the levels");
+    tracing::debug!(
+        tried,
+        ruled_out,
+        landed = landed.is_finite(),
+        "searched the levels"
+    );
 
     let mut clear: Vec<Point> = Vec::new();
     let mut cramped: Vec<Point> = Vec::new();
@@ -425,6 +463,9 @@ pub(crate) fn repair(
             Ok(repaired) => clear.push(repaired),
             Err(RepairError::Cramped { nearest, .. }) => cramped.push(nearest),
             Err(RepairError::Stranded) => {}
+            Err(RepairError::NotFinite { .. }) => {
+                unreachable!("a point that is not finite is refused before the search")
+            }
         }
     }
     // The first of two that tie, as everywhere else in repair.

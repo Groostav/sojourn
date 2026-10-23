@@ -827,7 +827,8 @@ impl FeasibleRegion {
     /// # Errors
     /// [`RepairError::Stranded`] when nothing feasible was reached at all, and
     /// [`RepairError::Cramped`] when something feasible was but the clearance
-    /// could not be had there.
+    /// could not be had there. [`RepairError::NotFinite`] when a coordinate of
+    /// `point` is NaN or infinite, before anything is searched.
     ///
     /// # Panics
     /// If `point` does not have one entry per variable, or `clearance` is

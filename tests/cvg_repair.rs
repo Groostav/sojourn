@@ -543,6 +543,50 @@ fn a_feasible_point_is_returned_untouched() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A point with a coordinate that is not finite has no nearest feasible point
+/// to land on, and the caller's own arithmetic is where it came from: an
+/// error naming the variable, not a panic from inside the search, whether the
+/// coordinate is discrete or continuous and whether or not the system has any
+/// discrete variable at all.
+#[test]
+fn a_coordinate_that_is_not_finite_is_refused_by_name() -> anyhow::Result<()> {
+    // setup
+    let mixed = region(&system(
+        vec![
+            InputVariable::new_discrete("k", 0.0, 1.0, 5.0),
+            InputVariable::new_continuous("y", 0.0, 1.0),
+        ],
+        &["k + y >= 2"],
+    )?)?;
+    let continuous = region(&system(
+        variables(&[("x1", -2.0, 2.0), ("x2", -2.0, 2.0)]),
+        &["2*x1 + x2 < 1"],
+    )?)?;
+
+    // act
+    let refused = [
+        mixed.repair(&[f64::NAN, 0.5], 0.0),
+        mixed.repair(&[3.0, f64::NAN], 0.0),
+        mixed.repair(&[f64::INFINITY, 0.5], 0.0),
+        continuous.repair(&[0.0, f64::NEG_INFINITY], 0.0),
+    ];
+
+    // assert
+    let named: Vec<(String, String)> = refused
+        .into_iter()
+        .map(|outcome| match outcome {
+            Err(RepairError::NotFinite { variable, value }) => (variable, value.to_string()),
+            other => panic!("expected NotFinite, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        named,
+        [("k", "NaN"), ("y", "NaN"), ("k", "inf"), ("x2", "-inf")]
+            .map(|(variable, value)| (variable.to_string(), value.to_string()))
+    );
+    Ok(())
+}
+
 // ---- clearance: a deliberate step inside, not an ulp ----------------------
 
 #[test]

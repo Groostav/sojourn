@@ -225,10 +225,9 @@ impl Levels {
 
     /// The index of the level `value` is exactly, if it is one.
     pub(crate) fn index_of(&self, value: f64) -> Option<usize> {
-        let around = self.estimate(value)?;
-        let candidates = around.saturating_sub(1)..=(around + 1).min(self.count() - 1);
+        let k = self.at_or_above(value)?;
         // `==` rather than bits: -0.0 and 0.0 are the same level.
-        candidates.into_iter().find(|&k| self.level(k) == value)
+        (self.level(k) == value).then_some(k)
     }
 
     /// The index of the level nearest `value`, the lower of two that tie.
@@ -237,8 +236,10 @@ impl Levels {
         // infinite value is not infinitely far from both ends' candidates and
         // tied onto the lower.
         let value = value.clamp(self.level(0), self.level(self.count() - 1));
-        let around = self.estimate(value).unwrap_or(0);
-        let candidates = around.saturating_sub(1)..=(around + 1).min(self.count() - 1);
+        let above = self
+            .at_or_above(value)
+            .expect("clamped to at most the last level");
+        let candidates = above.saturating_sub(1)..=above;
         candidates
             .into_iter()
             .min_by(|&a, &b| {
@@ -317,7 +318,7 @@ impl Levels {
     /// The first index whose level is at least `bound`.
     fn at_or_above(&self, bound: f64) -> Option<usize> {
         let mut k = self.estimate(bound).unwrap_or(0);
-        // The estimate is within one of the answer; these settle it exactly.
+        // The estimate is near the answer; these settle it exactly.
         while k > 0 && self.level(k - 1) >= bound {
             k -= 1;
         }
@@ -340,26 +341,32 @@ impl Levels {
         k.checked_sub(1)
     }
 
-    /// An index within one of the level nearest `value`, clamped into the
-    /// support, which callers settle by comparing levels: arithmetic on a
-    /// lattice, a binary search on a list. `None` for a value that is not a
-    /// number.
+    /// An index near the level nearest `value`, clamped into the support,
+    /// which callers settle by comparing levels however far that walks:
+    /// arithmetic on a lattice, a binary search on a list. `None` for a value
+    /// that is not a number.
     fn estimate(&self, value: f64) -> Option<usize> {
         if value.is_nan() {
             return None;
         }
         let last = self.count() - 1;
         match self {
-            Self::Lattice { .. } => {
-                let lowest = self.level(0);
-                let spacing = if last > 0 {
-                    self.level(1) - lowest
-                } else {
-                    1.0
+            Self::Lattice {
+                first, step, scale, ..
+            } => {
+                // In the lattice's own integers, where the step is exact. The
+                // gap between two rounded levels is not the step far from
+                // zero: `1e14 + 0.1` and `1e14` are `0.09375` apart, and over
+                // five hundred levels that drifts by thirty.
+                let integer = match scale {
+                    Scale::Divide(power) => value * power,
+                    Scale::Multiply(power) => value / power,
                 };
                 // Clamped as a float, so an infinite bound lands on an end
                 // rather than saturating a cast.
-                let index = ((value - lowest) / spacing).round().clamp(0.0, last as f64);
+                let index = ((integer - *first as f64) / *step as f64)
+                    .round()
+                    .clamp(0.0, last as f64);
                 Some(index as usize)
             }
             Self::Listed(levels) => Some(levels.partition_point(|level| *level < value).min(last)),
@@ -400,6 +407,11 @@ fn lattice(name: &str, lower: f64, step: f64, upper: f64) -> Levels {
         )
     };
     let scaled = |(digits, own): (i64, i32)| -> Option<i128> {
+        // Zero is zero at every power of ten, and its `own` is whatever `{:e}`
+        // wrote: no claim on the common exponent, so none to scale by.
+        if digits == 0 {
+            return Some(0);
+        }
         let power = 10_i128.checked_pow(u32::try_from(own - exponent).ok()?)?;
         let integer = i128::from(digits).checked_mul(power)?;
         (integer.abs() < EXACT_INTEGER).then_some(integer)
@@ -492,6 +504,60 @@ mod tests {
             ]
         );
         assert_eq!(large, vec![1e18, 2e18, 3e18, 4e18, 5e18]);
+    }
+
+    /// Zero has no exponent of its own to bring to the common power of ten,
+    /// so a step of ten from zero is as plain as a step of one.
+    #[test]
+    fn a_zero_bound_takes_any_power_of_ten() {
+        // setup
+        let tens = stepped(0.0, 10.0, 100.0);
+        let fifties = stepped(-100.0, 50.0, 0.0);
+        let large = stepped(0.0, 1e18, 5e18);
+
+        // act
+        let (tens, fifties, large) = (levels(&tens), levels(&fifties), levels(&large));
+
+        // assert
+        assert_eq!(
+            tens,
+            vec![
+                0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0
+            ]
+        );
+        assert_eq!(fifties, vec![-100.0, -50.0, 0.0]);
+        assert_eq!(large, vec![0.0, 1e18, 2e18, 3e18, 4e18, 5e18]);
+    }
+
+    /// Far from zero a fine step is coarser than the gap between two `f64`s
+    /// either side of it, so the distance between two rounded levels is not
+    /// the step: `1e14 + 0.1` and `1e14` differ by `0.09375`. Every level must
+    /// still be found and kept.
+    #[test]
+    fn a_fine_step_far_from_zero_finds_every_level() {
+        // setup
+        let far = stepped(1e14, 0.1, 1e14 + 100.0);
+        let declared: f64 = "100000000000050".parse().unwrap();
+
+        // act
+        let found: Vec<(Option<usize>, usize, f64)> = (0..far.count())
+            .map(|k| {
+                let level = far.level(k);
+                (
+                    far.index_of(level),
+                    far.nearest(level),
+                    far.level(far.nearest(level)),
+                )
+            })
+            .collect();
+
+        // assert
+        assert_eq!(far.index_of(declared), Some(500));
+        for (k, (index, nearest, snapped)) in found.into_iter().enumerate() {
+            assert_eq!(index, Some(k), "level {k} is a member");
+            assert_eq!(nearest, k, "level {k} is nearest itself");
+            assert_eq!(snapped.to_bits(), far.level(k).to_bits());
+        }
     }
 
     #[test]

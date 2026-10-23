@@ -164,7 +164,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 use crate::cvg::incidence::{ConstraintId, Row};
 use crate::cvg::prune::{self, Contracted};
-use crate::cvg::support::{Levels, VariableSupport};
+use crate::cvg::support::Levels;
 use crate::cvg::{classify, hc4, local, newton, normalised_distance as distance};
 use crate::{ConstraintSystem, Point};
 
@@ -330,10 +330,7 @@ pub(crate) fn repair(
         .supports
         .iter()
         .enumerate()
-        .filter_map(|(row, support)| match support {
-            VariableSupport::Continuous { .. } => None,
-            VariableSupport::Discrete(levels) => Some((row, levels)),
-        })
+        .filter_map(|(row, support)| Some((row, support.levels()?)))
         .collect();
     if discrete.is_empty() {
         return repair_continuous(system, Some(reference), point, clearance, stream);

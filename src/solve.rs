@@ -16,7 +16,6 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand::{Rng, SeedableRng};
 
 use crate::cvg;
-use crate::cvg::support::VariableSupport;
 use crate::cvg::walking::HitAndRunWalker;
 use crate::cvg::{Ladder, Opening, local};
 use crate::repair::RepairError;
@@ -546,10 +545,10 @@ impl ConstraintSolver {
             Opening::Impossible { blamed } => {
                 let blamed: Vec<ConstraintRef> =
                     blamed.into_iter().map(|i| system.named(i)).collect();
-                let discrete = system.supports.iter().any(|support| match support {
-                    VariableSupport::Continuous { .. } => false,
-                    VariableSupport::Discrete(_) => true,
-                });
+                let discrete = system
+                    .supports
+                    .iter()
+                    .any(|support| support.levels().is_some());
                 if !discrete {
                     return Err(Infeasibility::Proved { blamed });
                 }

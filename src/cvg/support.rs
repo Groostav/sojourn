@@ -145,6 +145,16 @@ impl VariableSupport {
         }
     }
 
+    /// The levels of a discrete coordinate; `None` for a continuous one. The
+    /// one place "is this coordinate discrete" is matched, so a third kind of
+    /// support is audited here rather than at every rung that asks.
+    pub(crate) fn levels(&self) -> Option<&Levels> {
+        match self {
+            Self::Continuous { .. } => None,
+            Self::Discrete(levels) => Some(levels),
+        }
+    }
+
     pub(crate) fn lower(&self) -> f64 {
         match self {
             Self::Continuous { lower, .. } => *lower,

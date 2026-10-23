@@ -302,10 +302,7 @@ fn scales(system: &ConstraintSystem) -> (Vec<f64>, Vec<f64>, Vec<bool>) {
     let discrete = system
         .supports
         .iter()
-        .map(|support| match support {
-            VariableSupport::Continuous { .. } => false,
-            VariableSupport::Discrete(_) => true,
-        })
+        .map(|support| support.levels().is_some())
         .collect();
     (lower, width, discrete)
 }

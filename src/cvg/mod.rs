@@ -542,10 +542,7 @@ pub(crate) fn pool(
     let radix: Option<Vec<&support::Levels>> = problem
         .supports
         .iter()
-        .map(|support| match support {
-            VariableSupport::Continuous { .. } => None,
-            VariableSupport::Discrete(levels) => Some(levels),
-        })
+        .map(VariableSupport::levels)
         .collect();
     let lattice = radix.and_then(|radix| {
         let size = radix

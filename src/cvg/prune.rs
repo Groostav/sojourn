@@ -202,11 +202,7 @@ pub(crate) fn contract(
     contributed: &mut [bool],
 ) -> Contracted {
     let constraints = problem.constraints.len();
-    let declared: Vec<f64> = problem
-        .supports
-        .iter()
-        .map(|support| support.upper() - support.lower())
-        .collect();
+    let declared = super::widths(problem);
 
     // A worklist with an "already waiting" flag, so a constraint is queued at
     // most once however many of its rows moved since it was last seen.
@@ -327,11 +323,7 @@ pub(crate) fn bisect(
     budget: u32,
     contributed: &mut [bool],
 ) -> Pruned {
-    let declared: Vec<f64> = problem
-        .supports
-        .iter()
-        .map(|support| support.upper() - support.lower())
-        .collect();
+    let declared = super::widths(problem);
     // The coordinate to split a box on: the widest relative to its declared
     // width, if that is wide enough to be worth splitting.
     let widest = |node: &Node| -> Option<usize> {

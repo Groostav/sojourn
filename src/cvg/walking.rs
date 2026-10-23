@@ -425,10 +425,7 @@ impl HitAndRunWalker {
             .movable
             .iter()
             .copied()
-            .filter(|slot| match problem.supports[*slot] {
-                VariableSupport::Continuous { .. } => true,
-                VariableSupport::Discrete(_) => false,
-            })
+            .filter(|slot| problem.supports[*slot].levels().is_none())
             .collect();
         let mut states: Vec<Vec<f64>> = Vec::new();
 

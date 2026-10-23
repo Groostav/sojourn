@@ -538,10 +538,7 @@ pub(crate) fn plans(
             drivable(constraint)
                 .into_iter()
                 .filter_map(|variable| position_in(schema, constraint, variable))
-                .filter(|position| match supports[*position] {
-                    VariableSupport::Continuous { .. } => true,
-                    VariableSupport::Discrete(_) => false,
-                })
+                .filter(|position| supports[*position].levels().is_none())
                 .collect()
         })
         .collect();

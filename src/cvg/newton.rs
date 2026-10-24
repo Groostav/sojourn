@@ -27,10 +27,16 @@
 //! # The active set is a fixed point
 //!
 //! Which constraints are active at the answer is not known in advance. The
-//! guess is the ones the *target* violates — the point being projected, which
-//! is also where the iteration starts unless a caller starts it elsewhere; a
-//! guess taken at a feasible start would be empty, and the first step would
-//! land on the target itself. The solve nominates a
+//! guess is the constraints the *target* violates — the point being
+//! projected, which is also where the iteration starts unless a caller
+//! starts it elsewhere; a guess taken at a feasible start would be empty,
+//! and the first step would land on the target itself. Bounds the target
+//! violates are left out of it: a target beyond the box usually violates a
+//! constraint there too, and the two ask for incompatible things — `x = 1`
+//! and `x + 0.001 y = 0.3` — so the guessed set is dependent, and its solve
+//! singular or, nearly dependent, finite garbage that never converges. That
+//! sent every repair from outside a coupled box of eighty to COBYLA, at 1.6 s
+//! each. The solve nominates a
 //! point; every constraint is judged there; a newly violated one joins the
 //! set and one whose multiplier came out negative — a constraint the
 //! projection is pulling *away* from, which at the answer cannot be active —
@@ -56,6 +62,13 @@
 //! steps that follow converge. The fraction-to-the-boundary rule of
 //! interior-point methods, on the box alone. A step that lands exactly *on*
 //! a wall is a projection onto it and is not shortened.
+//!
+//! A wall the *target* is beyond is different: the answer may well be on
+//! it, and a step shortened toward it approaches geometrically and never
+//! arrives. Such a wall blocks the step instead, the active-set method's
+//! blocking constraint, and joins the set. Being linear with a gradient
+//! that never vanishes, it cannot make the solve singular the way Keane's
+//! curved constraint does on a wall the target only sits on.
 //!
 //! # Fallible by design
 //!
@@ -213,8 +226,9 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
 
     let p = normalised(target);
     let mut u = normalised(from);
-    // The guess: what the target violates. See the module doc.
-    let mut active: Vec<usize> = (0..rows)
+    // The guess: the constraints the target violates, and no bound. See the
+    // module doc.
+    let mut active: Vec<usize> = (0..constraints)
         .filter(|row| residual(*row, target, &p).is_some_and(|value| value > 0.0))
         .collect();
     // A row the residual could not be evaluated on is one the method cannot
@@ -240,6 +254,7 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
         // Newton on the active set, from where the point stands.
         let mut multipliers: Vec<f64> = vec![0.0; active.len()];
         let mut converged = false;
+        let mut blocking: Vec<usize> = Vec::new();
         for _ in 0..NEWTON_ITERATIONS {
             iterations += 1;
             let x = denormalised(&u);
@@ -279,10 +294,26 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
                 (0..dimensions).map(|c| p[c] - pull[c]).collect()
             };
 
-            // A step through a box wall stops short of it, and the wall it
-            // would have crossed is linearised again from inside; see the
-            // module doc. Landing on the wall is a projection onto it and
-            // goes the whole way.
+            // A step through a wall the target is beyond is blocked by it,
+            // and the wall joins the set; see the module doc.
+            blocking = (0..dimensions)
+                .filter_map(|c| {
+                    if next[c] < 0.0 && u[c] > 0.0 && p[c] < 0.0 {
+                        Some(constraints + c)
+                    } else if next[c] > 1.0 && u[c] < 1.0 && p[c] > 1.0 {
+                        Some(constraints + dimensions + c)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !blocking.is_empty() {
+                break;
+            }
+            // A step through any other box wall stops short of it, and the
+            // wall it would have crossed is linearised again from inside;
+            // see the module doc. Landing on the wall is a projection onto
+            // it and goes the whole way.
             let fraction = (0..dimensions)
                 .filter_map(|c| {
                     let travel = next[c] - u[c];
@@ -315,6 +346,11 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
                 converged = true;
                 break;
             }
+        }
+        if !blocking.is_empty() {
+            // The step is not taken: the next round solves with the wall on.
+            active.extend(blocking);
+            continue;
         }
         if !converged {
             declined("no convergence", iterations, round, active.len());
@@ -518,6 +554,70 @@ mod tests {
             .expect("applies")
             .point;
         assert!(close(&landed, &[0.2, 0.0], 1e-12), "{landed:?}");
+    }
+
+    /// A target beyond a bound *and* a constraint, whose projection is on the
+    /// constraint alone: `x < 0.3` on `[0, 1]`, from and toward `1.15`. Both
+    /// rows are violated there, and together they ask for `x = 1` and `x =
+    /// 0.3` at once, so a guess that takes both is singular.
+    #[test]
+    fn a_target_beyond_a_bound_lands_on_the_constraint_inside_it() {
+        let system = system(
+            vec![InputVariable::new_continuous("x", 0.0, 1.0)],
+            &["x < 0.3"],
+        );
+        let landed = nearest(&system, &[1.15], &[1.15]).expect("applies").point;
+        assert!(close(&landed, &[0.3], 1e-12), "{landed:?}");
+    }
+
+    /// The same, where the rows the target violates are *nearly* dependent
+    /// rather than exactly: a cycle `x_i + 0.001 x_{i+1} < 0.3` toward
+    /// `1.15` everywhere, whose answer is `0.3 / 1.001` in every coordinate.
+    /// With the bounds guessed active the solve is finite garbage rather than
+    /// singular, and Newton spun its budget; at eighty variables `repair`
+    /// fell through to COBYLA for 1.6 s, once per assignment of levels.
+    #[test]
+    fn a_target_beyond_every_bound_of_a_coupled_cycle_lands_on_the_cycle() {
+        for n in [2, 80] {
+            let variables = (1..=n)
+                .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 1.0))
+                .collect::<Vec<InputVariable>>();
+            let sources = (1..=n)
+                .map(|i| format!("x{i} + 0.001 * x{} < 0.3", i % n + 1))
+                .collect::<Vec<String>>();
+            let system = system(
+                variables,
+                &sources.iter().map(String::as_str).collect::<Vec<&str>>(),
+            );
+            let landed = nearest(&system, &vec![1.15; n], &vec![1.15; n])
+                .unwrap_or_else(|| panic!("applies at {n} variables"))
+                .point;
+            assert!(
+                close(&landed, &vec![0.3 / 1.001; n], 1e-12),
+                "{n}: {landed:?}"
+            );
+        }
+    }
+
+    /// From inside the box toward a target beyond a wall the answer is on:
+    /// `x1 + x2 < 1.5` on `[0, 1]²`, from `(0.5, 0.5)` toward `(1.5, 0.8)`.
+    /// The foot on the constraint, `(1.1, 0.4)`, is through the wall `x1 <=
+    /// 1`, and the answer is the vertex `(1, 0.5)`, with multipliers `0.2` on
+    /// the bound and `0.3` on the constraint. A step stopped short of a wall
+    /// the target is beyond would approach it geometrically and never arrive.
+    #[test]
+    fn an_interior_start_toward_a_target_beyond_a_wall_lands_on_the_wall() {
+        let system = system(
+            vec![
+                InputVariable::new_continuous("x1", 0.0, 1.0),
+                InputVariable::new_continuous("x2", 0.0, 1.0),
+            ],
+            &["x1 + x2 < 1.5"],
+        );
+        let landed = nearest(&system, &[0.5, 0.5], &[1.5, 0.8])
+            .expect("applies")
+            .point;
+        assert!(close(&landed, &[1.0, 0.5], 1e-12), "{landed:?}");
     }
 
     /// A constraint violated at the start but inactive at the projection is

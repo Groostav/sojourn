@@ -62,6 +62,7 @@ use super::incidence::{ConstraintId, Row};
 use super::interval::Interval;
 use super::support::VariableSupport;
 use crate::ast::GlobalId;
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// The fraction of a coordinate's declared width it must shrink by for the
@@ -162,11 +163,15 @@ impl Node {
 
         accuse(culprit, &mut pending);
         for id in &self.narrowed_by[row.index()] {
+            rlimit::tick();
             accuse(*id, &mut pending);
         }
         while let Some(id) = pending.pop() {
+            rlimit::tick();
             for read in problem.incidence.rows_of(id) {
+                rlimit::tick();
                 for narrower in &self.narrowed_by[read.index()] {
+                    rlimit::tick();
                     accuse(*narrower, &mut pending);
                 }
             }
@@ -213,9 +218,10 @@ pub(crate) fn contract(
     let mut frames = Frames::default();
 
     while let Some(id) = queue.pop_front() {
+        rlimit::tick();
         queued[id.index()] = false;
         visits += 1;
-        if visits > cap {
+        if visits > cap && !cfg!(sojourn_stall = "contract_never_settles") {
             tracing::debug!(visits, "contraction stopped at its visit cap");
             break;
         }
@@ -223,6 +229,7 @@ pub(crate) fn contract(
         let rows = problem.incidence.rows_of(id);
         let mut globals: Vec<Interval> = rows.iter().map(|row| node.bounds[row.index()]).collect();
         for (symbol, row) in rows.iter().enumerate() {
+            rlimit::tick();
             let wanted = u32::try_from(symbol).expect("fewer than four billion symbols");
             let before = globals[symbol];
             // Onto the coordinate's levels, if it has any: an interval between
@@ -255,7 +262,7 @@ pub(crate) fn contract(
                     levels.count_within(after) < levels.count_within(before)
                 }
             };
-            if !progressed {
+            if !progressed && !cfg!(sojourn_stall = "contract_never_settles") {
                 continue;
             }
             globals[symbol] = after;
@@ -263,6 +270,7 @@ pub(crate) fn contract(
             node.narrowed_by[row.index()].push(id);
             contributed[id.index()] = true;
             for naming in problem.incidence.naming(*row) {
+                rlimit::tick();
                 if !queued[naming.index()] {
                     queued[naming.index()] = true;
                     queue.push_back(*naming);
@@ -375,6 +383,7 @@ pub(crate) fn bisect(
     let mut exhausted = false;
 
     while let Some(node) = queue.pop_front() {
+        rlimit::tick();
         let leaf = settle(node);
         if leaf.settled.is_some() {
             leaves.push(leaf);
@@ -398,6 +407,7 @@ pub(crate) fn bisect(
             }
             let mut violated = 0;
             for (index, constraint) in problem.constraints.iter().enumerate() {
+                rlimit::tick();
                 let id = ConstraintId(index);
                 let rows = problem.incidence.rows_of(id);
                 if constraint.holds(&only, rows, &problem.supports, 0.0, &mut []) {
@@ -405,7 +415,9 @@ pub(crate) fn bisect(
                 }
                 violated += 1;
                 for row in rows {
+                    rlimit::tick();
                     for index in leaf.node.blame(problem, id, *row) {
+                        rlimit::tick();
                         blamed[index] = true;
                     }
                 }
@@ -437,11 +449,13 @@ pub(crate) fn bisect(
                 .expect("`widest` chose it for holding two levels"),
         };
         for half in [halves.0, halves.1] {
+            rlimit::tick();
             let mut child = leaf.node.clone();
             child.bounds[row] = half;
             match contract(problem, child, contributed) {
                 Contracted::Empty { blamed: shown } => {
                     for index in shown {
+                        rlimit::tick();
                         blamed[index] = true;
                     }
                 }

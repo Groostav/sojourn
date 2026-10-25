@@ -88,6 +88,7 @@ use faer::linalg::solvers::Solve;
 use faer::{Col, Mat};
 
 use super::incidence::ConstraintId;
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// Newton iterations one active set gets to converge.
@@ -227,8 +228,14 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
     let p = normalised(target);
     let mut u = normalised(from);
     // The guess: the constraints the target violates, and no bound. See the
-    // module doc.
-    let mut active: Vec<usize> = (0..constraints)
+    // module doc. (The stall restores the guess before 1ad8b39, which took
+    // the bounds too.)
+    let guessed = if cfg!(sojourn_stall = "newton_guesses_bounds") {
+        rows
+    } else {
+        constraints
+    };
+    let mut active: Vec<usize> = (0..guessed)
         .filter(|row| residual(*row, target, &p).is_some_and(|value| value > 0.0))
         .collect();
     // A row the residual could not be evaluated on is one the method cannot
@@ -250,18 +257,26 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
         );
     };
     for _ in 0..active_set_rounds(rows) {
+        rlimit::tick();
         round += 1;
         // Newton on the active set, from where the point stands.
         let mut multipliers: Vec<f64> = vec![0.0; active.len()];
         let mut converged = false;
         let mut blocking: Vec<usize> = Vec::new();
-        for _ in 0..NEWTON_ITERATIONS {
+        let cap = if cfg!(sojourn_stall = "newton_never_converges") {
+            usize::MAX
+        } else {
+            NEWTON_ITERATIONS
+        };
+        for _ in 0..cap {
+            rlimit::tick();
             iterations += 1;
             let x = denormalised(&u);
             let k = active.len();
             let mut jacobian = Mat::<f64>::zeros(k, dimensions);
             let mut rhs = Col::<f64>::zeros(k);
             for (i, row) in active.iter().enumerate() {
+                rlimit::tick();
                 let Some(g) = residual(*row, &x, &u) else {
                     declined("a residual faults", iterations, round, active.len());
                     return None;
@@ -342,7 +357,10 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
             u = next;
             // A shortened step has not converged whatever its length: the
             // wall it stopped short of has yet to be linearised from there.
-            if step < NEWTON_STEP && fraction >= 1.0 {
+            if step < NEWTON_STEP
+                && fraction >= 1.0
+                && !cfg!(sojourn_stall = "newton_never_converges")
+            {
                 converged = true;
                 break;
             }
@@ -395,6 +413,7 @@ pub(crate) fn nearest(system: &ConstraintSystem, from: &[f64], target: &[f64]) -
                 .collect();
             let mut inward = vec![0.0; dimensions];
             for row in &standing {
+                rlimit::tick();
                 let partials = gradient(*row, &x)?;
                 let norm = partials
                     .iter()

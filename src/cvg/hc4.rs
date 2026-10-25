@@ -39,6 +39,7 @@ use crate::cvg::incidence::Row;
 use crate::cvg::interval::{self, Interval};
 use crate::eval::irgen;
 use crate::eval::tape::{Accumulate, Instruction, VirtualRegister, VirtualTape};
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// A constraint's tape over intervals, compiled once: the forward image and
@@ -365,6 +366,7 @@ pub(crate) fn slice_conditioned(
 
     let coordinate = Row(coordinate);
     for id in system.incidence.naming(coordinate) {
+        rlimit::tick();
         let rows = system.incidence.rows_of(*id);
         if let Some(settled) = settled
             && rows

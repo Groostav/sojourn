@@ -27,6 +27,7 @@ use crate::Ast;
 use crate::diagnostics::EvaluationFailure;
 use crate::diagnostics::{CompilationFailure, Fault, Problem, ProblemKind, RuntimeProblem, Span};
 use crate::frontend::rewrite;
+use crate::rlimit;
 
 use tape::{AllocatedTape, Register};
 use tile::{RegisterFile, TILE};
@@ -317,6 +318,7 @@ impl CompiledExpression {
 
         let mut tiles = Tiles::new(&self.tape, columns);
         while let Some((first, lanes)) = tiles.next_tile(columns) {
+            rlimit::tick();
             if let Some((lane, fault)) =
                 tiles.run(&self.tape, samples, self.schema.layout(), first, lanes)
             {
@@ -368,6 +370,7 @@ impl CompiledExpression {
 
         let mut tiles = Tiles::new(&self.tape, columns);
         while let Some((first, lanes)) = tiles.next_tile(columns) {
+            rlimit::tick();
             tiles.run(&self.tape, samples, self.schema.layout(), first, lanes);
             let verdicts = tiles.results(&self.tape, lanes);
             let faults = &tiles.faults[..lanes];
@@ -418,6 +421,8 @@ impl CompiledExpression {
     /// # Errors
     /// As [`eval`](Self::eval), without a column to name.
     pub(crate) fn eval_row(&self, row: &[f64]) -> Result<f64, EvaluationFailure> {
+        // The tape's loop over its instructions is charged here, once a run.
+        rlimit::tick();
         if row.len() != self.schema.len() {
             return Err(EvaluationFailure::RowWidthMismatch {
                 expected: self.schema.len(),
@@ -502,6 +507,7 @@ impl CompiledGradient {
 
         let mut tiles = Tiles::new(&self.tape, columns);
         while let Some((first, lanes)) = tiles.next_tile(columns) {
+            rlimit::tick();
             if let Some((lane, fault)) =
                 tiles.run(&self.tape, samples, self.schema.layout(), first, lanes)
             {
@@ -542,6 +548,8 @@ impl CompiledGradient {
         &self,
         row: &[f64],
     ) -> Result<(f64, Vec<f64>), EvaluationFailure> {
+        // The tape's loop over its instructions is charged here, once a run.
+        rlimit::tick();
         if row.len() != self.schema.len() {
             return Err(EvaluationFailure::RowWidthMismatch {
                 expected: self.schema.len(),

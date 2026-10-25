@@ -84,6 +84,7 @@ use walking::HitAndRunWalker;
 
 use support::VariableSupport;
 
+use crate::rlimit;
 use crate::solve::{Budgets, Strategy};
 use crate::{ConstraintSystem, Point};
 
@@ -311,6 +312,7 @@ fn cover(
     let mut seeds: Vec<Point> = Vec::new();
     let mut unsettled: Vec<prune::Node> = Vec::new();
     for leaf in leaves {
+        rlimit::tick();
         if held.iter().any(|point| leaf.node.contains(point)) {
             continue;
         }
@@ -336,6 +338,7 @@ fn cover(
         };
         let mut remaining = GAP_SEEDS;
         while remaining > 0 && !unsettled.is_empty() {
+            rlimit::tick();
             let known: Vec<&Point> = held.iter().chain(seeds.iter()).collect();
             let farthest = (0..unsettled.len())
                 .map(|index| {
@@ -566,6 +569,7 @@ pub(crate) fn pool(
             })
             .collect();
         for first in (0..size).step_by(ENUMERATION_BATCH) {
+            rlimit::tick();
             let columns = ENUMERATION_BATCH.min(size - first);
             let batch = faer::Mat::from_fn(radix.len(), columns, |row, column| {
                 let k = (first + column) / strides[row] % radix[row].count();
@@ -655,6 +659,7 @@ pub(crate) fn farthest_first(
     let mut nearest: Vec<f64> = pool
         .iter()
         .map(|candidate| {
+            rlimit::tick();
             existing
                 .iter()
                 .map(|point| normalised_distance(&widths, candidate, point))
@@ -663,6 +668,7 @@ pub(crate) fn farthest_first(
         .collect();
     let mut chosen: Vec<usize> = Vec::with_capacity(count);
     while chosen.len() < count {
+        rlimit::tick();
         // `max_by` keeps the last of equal maxima; with nothing to spread
         // from every candidate is infinitely far, and the one to take is the
         // witness at the front.
@@ -683,6 +689,7 @@ pub(crate) fn farthest_first(
         }
         let choice = &pool[index];
         for (candidate, nearest) in pool.iter().zip(&mut nearest) {
+            rlimit::tick();
             *nearest = nearest.min(normalised_distance(&widths, candidate, choice));
         }
         chosen.push(index);

@@ -48,3 +48,10 @@ default = []
 # on the machine, and a search can hold the GPU flat out for seconds. Without
 # it brute force runs on the CPU threads, which is also the reference path.
 gpu = ["dep:wgpu", "dep:pollster"]
+
+# `sojourn_stall` is set only by `just smoke-rlimit`, which rebuilds with one
+# induced spin at a time to show the computation limit ends it (src/rlimit.rs).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(sojourn_stall, values("newton_guesses_bounds", "newton_never_converges", "level_search_never_counts", "walker_never_settles", "random_direction_never_finite", "contract_never_settles", "brute_force_never_ends"))',
+] }

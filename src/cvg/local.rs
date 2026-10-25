@@ -93,6 +93,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 use super::classify;
 use super::interval::Interval;
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// How many starts a local solve over the declared box gets before
@@ -183,6 +184,7 @@ pub(crate) fn find_initial(
 
     let budget = EVALS_PER_DIMENSION * (dimensions as u64 + 1);
     for start in 0..starts {
+        rlimit::tick();
         let from: Vec<f64> = if start == 0 {
             vec![0.5; dimensions]
         } else {
@@ -286,11 +288,19 @@ impl Cube {
 
 /// Every constraint's residual at `point`, a fault as `INFINITY` — a point
 /// the solver is to step away from, in `basin`'s own convention.
+/// COBYLA's own work between two evaluations, which `basin` does and no
+/// tick of ours sees: linear algebra over the simplex's `d + 1` points and
+/// the constraints' linear models, about `d·(d + m)` a step.
+fn cobyla_iteration(dimensions: usize, constraints: usize) -> u64 {
+    (dimensions as u64).saturating_mul((dimensions + constraints) as u64)
+}
+
 fn residuals(problem: &ConstraintSystem, point: &Point) -> Vec<f64> {
     problem
         .constraints
         .iter()
         .map(|constraint| {
+            rlimit::tick();
             constraint
                 .compiled
                 .eval_row(point)
@@ -328,6 +338,7 @@ impl CostFunction for &Landing<'_> {
     type Error = Infallible;
 
     fn cost(&self, unit: &Vec<f64>) -> Result<f64, Infallible> {
+        rlimit::charge(cobyla_iteration(unit.len(), self.problem.constraints.len()));
         let point = self.cube.denormalised(unit);
         let total: f64 = residuals(self.problem, &point).iter().sum();
 
@@ -500,12 +511,14 @@ impl Projection<'_> {
                 let mut worst = residual(constraint, point);
                 let id = super::incidence::ConstraintId(index);
                 for row in self.problem.incidence.rows_of(id) {
+                    rlimit::tick();
                     let coordinate = row.index();
                     let step = self.margin * self.cube.width[coordinate];
                     if step <= 0.0 {
                         continue;
                     }
                     for sign in [-1.0, 1.0] {
+                        rlimit::tick();
                         neighbour[coordinate] = point[coordinate] + sign * step;
                         worst = worst.max(residual(constraint, &neighbour));
                     }
@@ -523,6 +536,7 @@ impl CostFunction for &Projection<'_> {
     type Error = Infallible;
 
     fn cost(&self, unit: &Vec<f64>) -> Result<f64, Infallible> {
+        rlimit::charge(cobyla_iteration(unit.len(), self.problem.constraints.len()));
         // Judged as a candidate with its driven coordinates settled — what
         // the chord did to its probes — and measured from where that put it.
         let mut point = self.cube.denormalised(unit);

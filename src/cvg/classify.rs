@@ -63,6 +63,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 use crate::ast::{Expr, GlobalId, Kind, Program};
 use crate::cvg::support::VariableSupport;
 use crate::cvg::{hc4, interval};
+use crate::rlimit;
 use crate::{Ast, ConstraintSystem, Point, Schema};
 
 /// What one equality lets us conclude.
@@ -272,10 +273,12 @@ fn drive(
 ) {
     let mut settled = vec![true; point.len()];
     for driven in plan.driven() {
+        rlimit::tick();
         settled[*driven] = false;
     }
 
     for driven in plan.driven().iter().copied() {
+        rlimit::tick();
         let slice = hc4::slice_conditioned(system, point, driven, Some(&settled));
         if !slice.is_empty() {
             point[driven] = place(slice, point[driven]);
@@ -303,12 +306,15 @@ pub(crate) fn tightest(system: &ConstraintSystem, point: &Point) -> Vec<usize> {
     }
     let mut scores: Vec<f64> = Vec::with_capacity(system.plans.len());
     for plan in &system.plans {
+        rlimit::tick();
         let mut settled = vec![true; point.len()];
         for driven in plan.driven() {
+            rlimit::tick();
             settled[*driven] = false;
         }
         let mut score = 0.0;
         for driven in plan.driven().iter().copied() {
+            rlimit::tick();
             let slice = hc4::slice_conditioned(system, point, driven, Some(&settled));
             let support = &system.supports[driven];
             let width = support.upper() - support.lower();

@@ -123,6 +123,7 @@ use rand::rngs::Xoshiro256PlusPlus;
 
 use super::support::{Levels, VariableSupport};
 use super::{classify, hc4};
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// How many chains to run at once.
@@ -445,6 +446,7 @@ impl HitAndRunWalker {
             tracing::debug_span!("burn_in", chains = CHAIN_COUNT, steps = burn_in).entered();
         let mut chosen: Vec<&Point> = Vec::new();
         while self.chains.len() < CHAIN_COUNT {
+            rlimit::tick();
             let spread = chosen.len() < CHAIN_COUNT / 2;
             let start = if chosen.is_empty() || !spread {
                 candidates[self.rng.random_range(0..candidates.len())]
@@ -472,6 +474,7 @@ impl HitAndRunWalker {
                 plan: (!tied.is_empty()).then(|| tied[self.chains.len() % tied.len()]),
             };
             for step in 0..burn_in {
+                rlimit::tick();
                 let (moved, judged) = advance(
                     chain.point,
                     step,
@@ -510,7 +513,9 @@ impl HitAndRunWalker {
         if self.frame.transform.is_some() && states.len() > self.frame.continuous.len() {
             let mut states: Vec<Vec<f64>> = Vec::new();
             for chain in &mut self.chains {
+                rlimit::tick();
                 for _ in 0..burn_in {
+                    rlimit::tick();
                     let (moved, judged) = advance(
                         std::mem::take(&mut chain.point),
                         chain.steps,
@@ -570,11 +575,13 @@ impl HitAndRunWalker {
         // judged this one — so the points are walked one at a time.
         let points: Vec<Point> = (0..count)
             .map(|emitted| {
+                rlimit::tick();
                 let index = emitted % self.chains.len();
                 let mut point = std::mem::take(&mut self.chains[index].point);
                 let mut steps = self.chains[index].steps;
                 let plan = self.chains[index].plan.map(|plan| &problem.plans[plan]);
                 for _ in 0..thinning {
+                    rlimit::tick();
                     let (moved, judged) =
                         advance(point, steps, &mut self.rng, problem, plan, &self.frame);
                     point = moved;
@@ -708,7 +715,19 @@ fn advance(
         box_chord(&from, &direction, problem)
     };
 
-    for _ in 0..SHRINK_LIMIT {
+    let cap = if cfg!(sojourn_stall = "walker_never_settles") {
+        usize::MAX
+    } else {
+        SHRINK_LIMIT
+    };
+    for _ in 0..cap {
+        rlimit::tick();
+        if cfg!(sojourn_stall = "walker_never_settles") {
+            // Judges and never accepts, nor shrinks.
+            judged += 1;
+            let _ = problem.is_feasible(&from, 0.0);
+            continue;
+        }
         if lower >= upper {
             break;
         }
@@ -750,6 +769,7 @@ fn advance(
 /// the box wall and that rescaling is scale-invariant.
 fn random_direction(rng: &mut Xoshiro256PlusPlus, dimensions: usize) -> Vec<f64> {
     loop {
+        rlimit::tick();
         let components: Vec<f64> = (0..dimensions)
             .map(|_| {
                 // Box-Muller. `random_range` is half-open at the top, so
@@ -761,7 +781,8 @@ fn random_direction(rng: &mut Xoshiro256PlusPlus, dimensions: usize) -> Vec<f64>
             .collect();
 
         let norm = components.iter().map(|c| c * c).sum::<f64>().sqrt();
-        if norm > 0.0 && norm.is_finite() {
+        if norm > 0.0 && norm.is_finite() && !cfg!(sojourn_stall = "random_direction_never_finite")
+        {
             return components.iter().map(|c| c / norm).collect();
         }
         // All components underflowed to zero. Vanishingly rare, and cheaper to
@@ -818,6 +839,7 @@ fn level_move(
         Some(plan) => {
             let mut settled = vec![true; from.len()];
             for driven in plan.driven() {
+                rlimit::tick();
                 settled[*driven] = false;
             }
             hc4::slice_conditioned(problem, &from, axis, Some(&settled))
@@ -834,6 +856,7 @@ fn level_move(
     let (mut lowest, mut highest) = (*range.start(), *range.end());
     let mut judged = 0;
     for _ in 0..SHRINK_LIMIT {
+        rlimit::tick();
         let k = rng.random_range(lowest..=highest);
         let mut candidate = from.clone();
         candidate[axis] = levels.level(k);
@@ -863,6 +886,7 @@ fn level_move(
 fn box_chord(from: &Point, direction: &[f64], problem: &ConstraintSystem) -> (f64, f64) {
     let (mut lower, mut upper) = (f64::NEG_INFINITY, f64::INFINITY);
     for (index, support) in problem.supports.iter().enumerate() {
+        rlimit::tick();
         let component = direction[index];
 
         // A zero component means the ray is parallel to this pair of walls and

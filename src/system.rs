@@ -29,6 +29,7 @@ use crate::cvg::incidence::{ConstraintId, Incidence, Row};
 use crate::cvg::support::VariableSupport;
 use crate::diagnostics::CompilationFailure;
 use crate::eval::Gradient;
+use crate::rlimit;
 use crate::{Ast, CompiledExpression, Schema};
 
 /// A point in the input space, one value per variable in declaration order.
@@ -203,6 +204,7 @@ impl Constraint {
             return true;
         }
         for row in rows {
+            rlimit::tick();
             let coordinate = row.index();
             let step = match supports[coordinate] {
                 VariableSupport::Continuous { lower, upper } => clearance * (upper - lower),
@@ -212,6 +214,7 @@ impl Constraint {
                 continue;
             }
             for sign in [-1.0, 1.0] {
+                rlimit::tick();
                 neighbour[coordinate] = point[coordinate] + sign * step;
                 if !passes(neighbour) {
                     neighbour[coordinate] = point[coordinate];
@@ -515,6 +518,7 @@ impl ConstraintSystem {
     pub(crate) fn pinned(&self, pins: &[(usize, f64)]) -> Self {
         let mut pinned = self.clone();
         for (row, value) in pins {
+            rlimit::tick();
             pinned.supports[*row] = VariableSupport::Continuous {
                 lower: *value,
                 upper: *value,
@@ -583,6 +587,7 @@ impl ConstraintSystem {
             .iter()
             .enumerate()
             .all(|(index, constraint)| {
+                rlimit::tick();
                 let rows = self.incidence.rows_of(ConstraintId(index));
                 constraint.holds(point, rows, &self.supports, clearance, &mut neighbour)
             })
@@ -680,6 +685,7 @@ impl ConstraintSystem {
         }
         let mut worst = f64::NEG_INFINITY;
         for constraint in &self.constraints {
+            rlimit::tick();
             worst = worst.max(constraint.compiled.eval_row(point).ok()?);
         }
         Some(worst)
@@ -702,6 +708,7 @@ impl ConstraintSystem {
 
         let mut pass: Vec<bool> = (0..columns)
             .map(|column| {
+                rlimit::tick();
                 self.supports
                     .iter()
                     .enumerate()
@@ -710,6 +717,7 @@ impl ConstraintSystem {
             .collect();
 
         for constraint in &self.constraints {
+            rlimit::tick();
             constraint.compiled.holds(candidates, &mut pass).expect(
                 "`ConstraintSystem::new` proved every constraint binds, and candidates are shaped by the same box",
             );

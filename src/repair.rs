@@ -166,6 +166,7 @@ use crate::cvg::incidence::{ConstraintId, Row};
 use crate::cvg::prune::{self, Contracted};
 use crate::cvg::support::Levels;
 use crate::cvg::{classify, hc4, local, newton, normalised_distance as distance};
+use crate::rlimit;
 use crate::{ConstraintSystem, Point};
 
 /// How many rounds of clamping a point gets before the projection starts
@@ -379,6 +380,7 @@ pub(crate) fn repair(
         let mut at = point.to_vec();
         let mut from = reference.to_vec();
         for (row, level) in &pins {
+            rlimit::tick();
             at[*row] = *level;
             from[*row] = *level;
         }
@@ -421,6 +423,7 @@ pub(crate) fn repair(
     let mut tried = 0;
     let mut ruled_out = 0;
     for (squared, indices) in Assignments::new(costs) {
+        rlimit::tick();
         if tried >= LEVEL_SEARCH_BUDGET
             || ruled_out >= LEVEL_RULE_OUT_BUDGET
             || squared.sqrt() >= landed
@@ -436,9 +439,11 @@ pub(crate) fn repair(
             ruled_out += 1;
             continue;
         };
-        tried += 1;
-        if let Ok(repaired) = &outcome {
-            landed = landed.min(distance(&widths, repaired, point));
+        if !cfg!(sojourn_stall = "level_search_never_counts") {
+            tried += 1;
+            if let Ok(repaired) = &outcome {
+                landed = landed.min(distance(&widths, repaired, point));
+            }
         }
         outcomes.push(outcome);
     }
@@ -456,6 +461,7 @@ pub(crate) fn repair(
     let mut clear: Vec<Point> = Vec::new();
     let mut cramped: Vec<Point> = Vec::new();
     for outcome in outcomes {
+        rlimit::tick();
         match outcome {
             Ok(repaired) => clear.push(repaired),
             Err(RepairError::Cramped { nearest, .. }) => cramped.push(nearest),
@@ -521,6 +527,7 @@ impl Iterator for Assignments {
     fn next(&mut self) -> Option<Self::Item> {
         let Ranked(cost, indices) = self.frontier.pop()?;
         for row in 0..indices.len() {
+            rlimit::tick();
             if indices[row] + 1 < self.costs[row].len() {
                 let mut next = indices.clone();
                 next[row] += 1;
@@ -783,6 +790,7 @@ fn nearest_of(
     let mut cramped: Option<(f64, Point)> = None;
     let mut winner = "none";
     for (stage, landing) in landings {
+        rlimit::tick();
         match landing {
             Landing::Clear(candidate) => {
                 let candidate = released(system, candidate, point, clearance);
@@ -943,6 +951,7 @@ fn backed_off(
     }
     let mut rung = clearance.max(f64::EPSILON) / length;
     while rung < 1.0 {
+        rlimit::tick();
         let mut probe: Point = landing
             .iter()
             .zip(inward)
@@ -985,8 +994,10 @@ fn sampled(
     let mut radius = SAMPLING_RADIUS;
     let mut best: Option<(f64, Point)> = None;
     for _ in 0..SAMPLING_ROUNDS {
+        rlimit::tick();
         let mut found = false;
         for _ in 0..SAMPLING_DRAWS {
+            rlimit::tick();
             let mut draw: Point = point
                 .iter()
                 .zip(widths)
@@ -1038,6 +1049,7 @@ fn along_chord(system: &ConstraintSystem, reference: &[f64], point: &[f64]) -> P
     let mut landed: Point = reference.to_vec();
     let (mut lower, mut upper) = (0.0_f64, 1.0_f64);
     for _ in 0..CHORD_BITS {
+        rlimit::tick();
         let middle = 0.5 * (lower + upper);
         if middle <= lower || middle >= upper {
             break;
@@ -1074,6 +1086,7 @@ fn clamped(
     let _span = tracing::debug_span!("clamp").entered();
     let mut current = from;
     for _ in 0..CLAMP_SWEEPS {
+        rlimit::tick();
         // Every coordinate's clamp, with what it costs, from the point as it
         // stands at the start of the sweep. Cost is measured before any are
         // applied, which is what makes "cheapest first" a statement about the
@@ -1112,6 +1125,7 @@ fn clamped(
         clamps.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
 
         for (_, coordinate, target) in clamps {
+            rlimit::tick();
             let value = current[coordinate];
             current[coordinate] = target;
 
@@ -1133,6 +1147,7 @@ fn clamped(
                 let magnitude = target.abs().max(widths[coordinate]).max(f64::MIN_POSITIVE);
                 let ulp = magnitude.next_up() - magnitude;
                 for rung in 0..LANDING_LADDER {
+                    rlimit::tick();
                     let nudged = target + inward * ulp * f64::from(1u32 << rung);
                     current[coordinate] = nudged;
                     if landed(system, &current, coordinate, clearance) {
@@ -1202,6 +1217,7 @@ fn released(
 ) -> Point {
     let _span = tracing::debug_span!("release").entered();
     for coordinate in 0..candidate.len() {
+        rlimit::tick();
         let moved = candidate[coordinate];
         if moved == original[coordinate] {
             continue;

@@ -31,7 +31,7 @@ use super::progress::Trial;
 use super::sieve::{GPU_BATCH, Sieve};
 use super::support::{Levels, VariableSupport};
 use crate::solve::GpuTarget;
-use crate::{ConstraintSystem, Point};
+use crate::{ConstraintSystem, Point, rlimit};
 
 /// How many candidates to propose per point asked for.
 ///
@@ -118,6 +118,7 @@ pub(crate) fn fill(
         .collect();
 
     for column in 0..candidates.ncols() {
+        rlimit::tick();
         for (value, draw) in candidates.col_as_slice_mut(column).iter_mut().zip(&table) {
             let u = unit(rng.next_u64());
             *value = match draw {
@@ -297,7 +298,10 @@ impl RandomSampler {
         let work = |first: u64, stride: u64| {
             let mut candidates = Mat::zeros(rows, columns);
             let mut k = first;
-            while k < batches && k <= winner.load(Ordering::Acquire) {
+            while cfg!(sojourn_stall = "brute_force_never_ends")
+                || (k < batches && k <= winner.load(Ordering::Acquire))
+            {
+                rlimit::tick();
                 let mut rng = Xoshiro256PlusPlus::seed_from_u64(base ^ k);
                 fill(&mut candidates, &self.supports, &mut rng);
                 // Driven coordinates are computed rather than guessed, which is
@@ -320,6 +324,7 @@ impl RandomSampler {
                 if !problem.plans.is_empty() {
                     let rows = candidates.nrows();
                     for column in 0..candidates.ncols() {
+                        rlimit::tick();
                         let mut point: Point =
                             (0..rows).map(|row| candidates[(row, column)]).collect();
                         let plan = &problem.plans[rng.random_range(0..problem.plans.len())];
@@ -345,13 +350,30 @@ impl RandomSampler {
             }
         };
 
+        // Every worker spends from the caller's computation limit, and a
+        // worker's panic is re-raised as itself: left to the scope, it would
+        // arrive as "a scoped thread panicked" and lose its message.
         let stride = self.threads as u64;
+        let meter = rlimit::current();
         std::thread::scope(|scope| {
-            for first in 1..stride {
-                let work = &work;
-                scope.spawn(move || work(first, stride));
-            }
+            let workers: Vec<_> = (1..stride)
+                .map(|first| {
+                    rlimit::tick();
+                    let work = &work;
+                    let meter = meter.clone();
+                    scope.spawn(move || {
+                        let _metered = rlimit::adopt(meter);
+                        work(first, stride);
+                    })
+                })
+                .collect();
             work(0, stride);
+            for worker in workers {
+                rlimit::tick();
+                if let Err(payload) = worker.join() {
+                    std::panic::resume_unwind(payload);
+                }
+            }
         });
 
         let points = best
@@ -373,6 +395,19 @@ impl RandomSampler {
 /// Batch `k` is a function of `(base, k)` on a given device, and the batches
 /// run in order, so the first batch with an exact hit is also the lowest —
 /// the same contract as the CPU loop, without needing the winner bookkeeping.
+/// The batches a GPU proposal budget runs as, and none in a build without
+/// the GPU: what `rlimit::for_solve` charges for it.
+pub(crate) fn gpu_batches(budget: u64) -> u64 {
+    #[cfg(feature = "gpu")]
+    let batches = budget.div_ceil(u64::from(GPU_BATCH));
+    #[cfg(not(feature = "gpu"))]
+    let batches = {
+        let _ = budget;
+        0
+    };
+    batches
+}
+
 #[cfg(feature = "gpu")]
 fn brute_force_on_gpu(
     sieve: &Sieve,
@@ -383,6 +418,7 @@ fn brute_force_on_gpu(
     let mut proposed = 0u64;
     let batches = budget.div_ceil(u64::from(GPU_BATCH));
     for k in 0..batches {
+        rlimit::tick();
         let remaining = budget - k * u64::from(GPU_BATCH);
         let count = u32::try_from(remaining.min(u64::from(GPU_BATCH))).expect("at most GPU_BATCH");
         let survivors = sieve.sieve_generated(base, k, count)?;

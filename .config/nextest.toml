@@ -26,3 +26,10 @@ leak-timeout = "500ms"
 [[profile.default.overrides]]
 filter = 'binary(brute_squad)'
 threads-required = 'num-cpus'
+
+# `just smoke-rlimit`: each test is a call stalled on purpose, which the
+# computation limit should end in seconds (tests/smoke_rlimit.rs). A stall the
+# limit misses must fail here rather than wait out the default profile's two
+# minutes, so the backstop is one period of thirty seconds.
+[profile.smoke-rlimit]
+slow-timeout = { period = "30s", terminate-after = 1 }

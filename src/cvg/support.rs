@@ -54,6 +54,7 @@
 use std::ops::RangeInclusive;
 
 use crate::cvg::interval::Interval;
+use crate::rlimit;
 use crate::{Domain, InputVariable};
 
 /// The support of one variable: the values its coordinate may take, as the
@@ -330,9 +331,11 @@ impl Levels {
         let mut k = self.estimate(bound).unwrap_or(0);
         // The estimate is near the answer; these settle it exactly.
         while k > 0 && self.level(k - 1) >= bound {
+            rlimit::tick();
             k -= 1;
         }
         while k < self.count() && self.level(k) < bound {
+            rlimit::tick();
             k += 1;
         }
         (k < self.count()).then_some(k)
@@ -343,9 +346,11 @@ impl Levels {
         let mut k = self.estimate(bound).unwrap_or(0);
         // Settled to the first level above `bound`, then one back.
         while k > 0 && self.level(k - 1) > bound {
+            rlimit::tick();
             k -= 1;
         }
         while k < self.count() && self.level(k) <= bound {
+            rlimit::tick();
             k += 1;
         }
         k.checked_sub(1)

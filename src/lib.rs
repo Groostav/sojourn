@@ -112,6 +112,7 @@ mod frontend;
 mod nodes;
 pub mod quality;
 mod repair;
+mod rlimit;
 mod solve;
 mod system;
 
@@ -124,7 +125,7 @@ pub use repair::RepairError;
 pub use solve::{
     Candidates, Chooser, ConstraintSolver, DEFAULT_GPU_PROPOSAL_BUDGET, DEFAULT_PROPOSAL_BUDGET,
     DEFAULT_PRUNE_BUDGET, FarthestFirst, FeasibleRegion, GPU_VARIABLE, GpuTarget, Infeasibility,
-    SampleError,
+    RLIMIT_VARIABLE, SampleError,
 };
 pub use system::{ConstraintRef, ConstraintSystem, Domain, InputVariable, Point, SystemError};
 

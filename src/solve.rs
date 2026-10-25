@@ -19,6 +19,7 @@ use crate::cvg;
 use crate::cvg::walking::HitAndRunWalker;
 use crate::cvg::{Ladder, Opening, local};
 use crate::repair::RepairError;
+use crate::rlimit;
 use crate::{ConstraintRef, ConstraintSystem, Point};
 
 /// Why no sample was produced — and whether that is a proof or a shrug.
@@ -248,6 +249,21 @@ pub const DEFAULT_GPU_PROPOSAL_BUDGET: u64 = 30_000_000_000;
 /// "which device did it actually use"; the list is logged at `info` whenever
 /// the variable is set. Only read by builds with the `gpu` feature.
 pub const GPU_VARIABLE: &str = "SOJOURN_GPU";
+
+/// The environment variable that scales the computation limit every
+/// [`solve`](ConstraintSolver::solve), [`sample`](FeasibleRegion::sample) and
+/// [`repair`](FeasibleRegion::repair) runs under.
+///
+/// Every loop in the search counts its iterations against a limit set far
+/// above what any input spends, and a call that reaches it is a bug in this
+/// crate — a search that would otherwise look hung — so it panics rather than
+/// returning. **No limit and no count is part of the API.** Both change
+/// between revisions, in either direction, and a release that counts more of
+/// its work is free to. This variable exists only so a caller who hits the
+/// panic can unblock themselves while the bug report is open: a positive
+/// number multiplies every limit (`10` is ten times as patient), read once per
+/// process. A value that is not a positive number panics at the first call.
+pub const RLIMIT_VARIABLE: &str = "SOJOURN_RLIMIT";
 
 /// The GPU device configuration for brute-force candidate sampling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,6 +520,14 @@ impl ConstraintSolver {
             constraints = system.constraints.len()
         )
         .entered();
+        let _metered = rlimit::enter(
+            rlimit::Entry::Solve,
+            rlimit::for_solve(
+                system.variables.len() + system.constraints.len(),
+                self.budgets.proposals,
+                cvg::sampling::gpu_batches(self.budgets.gpu_proposals),
+            ),
+        );
         let stream = Xoshiro256PlusPlus::from_rng(rng);
         let mut ladder = Ladder::new(system, stream, &self.strategies, self.budgets.clone());
         let (verdict, progress) = cvg::open(system, &mut ladder, self.known_feasible.clone());
@@ -834,6 +858,10 @@ impl FeasibleRegion {
     /// negative or not finite. That is a caller mixing up systems, not a
     /// verdict about the point.
     pub fn repair(&self, point: &[f64], clearance: f64) -> Result<Point, RepairError> {
+        let _metered = rlimit::enter(
+            rlimit::Entry::Repair,
+            rlimit::for_repair(self.system.variables.len() + self.system.constraints.len()),
+        );
         crate::repair::repair(
             &self.system,
             &self.reference,
@@ -960,6 +988,14 @@ impl FeasibleRegion {
             size >= count,
             "the chooser asked for {size} candidates for a design of {count}"
         );
+        let _metered = rlimit::enter(
+            rlimit::Entry::Sample,
+            rlimit::for_sample(
+                rows + self.system.constraints.len(),
+                size + self.points.len(),
+                count + existing.ncols(),
+            ),
+        );
 
         let pool = cvg::pool(&self.system, &self.walker, &self.points, size, &mut stream);
         let widths = cvg::widths(&self.system);
@@ -996,6 +1032,7 @@ impl FeasibleRegion {
         );
         let mut taken = vec![false; candidates.len()];
         for &index in &chosen {
+            rlimit::tick();
             assert!(
                 index < candidates.len(),
                 "the chooser returned index {index}, past a pool of {}",

@@ -64,6 +64,26 @@ brute:
 quality:
     cargo nextest run --release --no-capture --no-fail-fast --test sampling_quality
 
+# Shows that the computation limit (src/rlimit.rs) turns a spin into a panic in
+# seconds. Each stall breaks one loop on purpose, behind `cfg(sojourn_stall)`,
+# so the crate is rebuilt once per stall into its own target directory:
+# RUSTFLAGS rebuilds every dependency too, and a directory each keeps those
+# builds cached without touching the ordinary one. The first run is slow.
+# A stall the limit misses fails on the `smoke-rlimit` nextest profile's
+# timeout rather than waiting. Release, because the limit's promise is seconds
+# in the build a caller runs.
+[doc("Rebuild with each induced stall and check the computation limit ends it")]
+smoke-rlimit:
+    $failed = @(); \
+    foreach ($stall in @('newton_guesses_bounds', 'newton_never_converges', 'level_search_never_counts', 'walker_never_settles', 'random_direction_never_finite', 'contract_never_settles', 'brute_force_never_ends')) { \
+        Write-Host "== $stall"; \
+        $env:RUSTFLAGS = "--cfg sojourn_stall=`"$stall`""; \
+        $env:CARGO_TARGET_DIR = "target/smoke-rlimit/$stall"; \
+        cargo nextest run --release --profile smoke-rlimit --no-capture --test smoke_rlimit; \
+        if ($LASTEXITCODE -ne 0) { $failed += $stall } \
+    }; \
+    if ($failed.Count -gt 0) { Write-Host "the limit did not end: $($failed -join ', ')"; exit 1 }
+
 [doc("Tag the current commit as `v<version>[-suffix]`, checked against Cargo.toml")]
 tag name:
     if (git status --porcelain) { throw "the tree is not clean; commit or stash first" }; \

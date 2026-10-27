@@ -1,7 +1,7 @@
 //! Source text to [`Ast`].
 //!
 //! Everything here is meaning-preserving. [`parse`] lexes, parses and lowers to
-//! [`crate::ast`], then [`rewrite::canonicalize`] normalises the tree
+//! [`crate::ast`] ([`syntax::raw_ast`]), then [`rewrite::canonicalize`] normalises the tree
 //! *without changing what it computes* — folding constants, inverting monotone
 //! comparisons, unrolling aggregates over literal bounds, collecting a term
 //! multiplied by itself into a power.
@@ -15,10 +15,10 @@ use crate::ast;
 use crate::diagnostics::{CompilationFailure, Fault, Problem, ProblemKind, Span};
 
 pub(crate) mod generated;
-pub(crate) mod parse;
 pub(crate) mod rewrite;
+pub(crate) mod syntax;
 
-pub(crate) use parse::{parses_as_variable, translate};
+pub(crate) use syntax::parses_as_variable;
 
 /// Compiles source text into an evaluable expression.
 ///
@@ -37,8 +37,8 @@ pub(crate) fn parse(source: &str) -> Result<Ast, CompilationFailure> {
         });
     }
 
-    let lowered = match translate(source) {
-        Ok(lowered) => lowered,
+    let raw = match syntax::raw_ast(source) {
+        Ok(raw) => raw,
         Err(problems) => {
             return Err(CompilationFailure {
                 source: source.to_owned(),
@@ -52,7 +52,7 @@ pub(crate) fn parse(source: &str) -> Result<Ast, CompilationFailure> {
     // The canonical form: constants folded, monotone comparisons inverted,
     // aggregates over known bounds unrolled, repeated factors collected into
     // powers — in that order, for the reasons `rewrite::canonicalize` gives.
-    let program = rewrite::canonicalize(lowered.program).map_err(render)?;
+    let program = rewrite::canonicalize(raw.program).map_err(render)?;
 
     // Read off the finished tree rather than tracked while building it: one
     // definition of the flag, and the same one `resolve_subscripts` recomputes.
@@ -61,9 +61,9 @@ pub(crate) fn parse(source: &str) -> Result<Ast, CompilationFailure> {
     Ok(Ast {
         source: source.to_owned(),
         program,
-        symbols: lowered.symbols,
+        symbols: raw.symbols,
         contains_dynamic_lookup,
-        is_constraint: lowered.is_constraint,
+        is_constraint: raw.is_constraint,
     })
 }
 
@@ -83,21 +83,27 @@ pub(crate) fn failure(source: &str, faults: Vec<Fault>) -> CompilationFailure {
     }
 }
 
-/// A parsed expression, ready to be bound to a [`Schema`](crate::Schema).
+/// A parsed expression in canonical form, ready to be bound to a
+/// [`Schema`](crate::Schema): a [`syntax::RawAst`] that
+/// [`rewrite::canonicalize`] has run over. Both backends rely on that form.
 ///
 /// Crate-private: a caller hands source text to `compile`, `compile_system`
 /// or `ConstraintSystem::new` and never sees the tree between.
+///
+/// The fields are private to `frontend`, so only this module and its passes
+/// can build or take apart an `Ast`; the backends read it through the
+/// accessors and cannot hand one another a tree that skipped canonicalisation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Ast {
-    pub(crate) source: String,
-    pub(crate) program: ast::Program,
+    source: String,
+    program: ast::Program,
     /// Distinct statically-referenced names in first-reference order.
     /// `ast::GlobalId` indexes into *this*, not into the schema — the AST is
     /// built before any schema exists, so binding (`eval::bind`) is what maps
     /// these onto row positions.
-    pub(crate) symbols: Vec<String>,
-    pub(crate) contains_dynamic_lookup: bool,
-    pub(crate) is_constraint: bool,
+    symbols: Vec<String>,
+    contains_dynamic_lookup: bool,
+    is_constraint: bool,
 }
 
 impl Ast {
@@ -105,6 +111,12 @@ impl Ast {
     #[must_use]
     pub(crate) fn source(&self) -> &str {
         &self.source
+    }
+
+    /// The canonical tree.
+    #[must_use]
+    pub(crate) const fn program(&self) -> &ast::Program {
+        &self.program
     }
 
     /// Whether the expression uses `var[i]` dynamic lookup.

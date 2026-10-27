@@ -345,17 +345,17 @@ pub(crate) fn shape(constraint: &Ast) -> Shape {
     // static symbol list is not the whole story and a "does it appear on the
     // other side" test cannot be answered. `Ast` documents this and it is
     // exactly the trap it warns about.
-    if constraint.contains_dynamic_lookup {
+    if constraint.contains_dynamic_lookup() {
         return Shape::Opaque;
     }
-    if !constraint.is_constraint {
+    if !constraint.is_constraint() {
         return Shape::Opaque;
     }
 
     // A block with local bindings could still be an equality, but its sides are
     // not reachable without substituting the assignments through, which is a
     // rewrite and not a reading.
-    let Program { body, .. } = &constraint.program;
+    let Program { body, .. } = constraint.program();
     if !body.assignments.is_empty() {
         return Shape::Opaque;
     }
@@ -399,10 +399,10 @@ pub(crate) fn shape(constraint: &Ast) -> Shape {
 /// [`plans`] chooses among them, since which of `x1 + x2 == 3`'s two a system
 /// drives depends on what its other equations want.
 pub(crate) fn drivable(constraint: &Ast) -> Vec<GlobalId> {
-    if constraint.contains_dynamic_lookup || !constraint.is_constraint {
+    if constraint.contains_dynamic_lookup() || !constraint.is_constraint() {
         return Vec::new();
     }
-    let Program { body, .. } = &constraint.program;
+    let Program { body, .. } = constraint.program();
     if !body.assignments.is_empty() {
         return Vec::new();
     }
@@ -653,7 +653,7 @@ pub(crate) fn plans(
             .filter_map(|(position, equation)| equation.map(|equation| (position, equation)))
             .map(|(position, equation)| {
                 let constraint = &constraints[equation];
-                let dependencies = globals(&constraint.program.body.result)
+                let dependencies = globals(&constraint.program().body.result)
                     .into_iter()
                     .filter_map(|global| position_in(schema, constraint, global))
                     .filter(|dependency| *dependency != position)
@@ -708,7 +708,7 @@ pub(crate) fn plans(
 /// binding would already have rejected — but this module must not panic on a
 /// caller's behalf.
 fn position_in(schema: &Schema, constraint: &Ast, variable: GlobalId) -> Option<usize> {
-    let name = constraint.symbols.get(variable.index())?;
+    let name = constraint.symbols().get(variable.index())?;
     schema
         .names()
         .iter()
@@ -745,7 +745,7 @@ mod tests {
     fn driven_name(constraint: &Ast) -> Option<&str> {
         match shape(constraint) {
             Shape::Driven { variable, .. } | Shape::Pinned { variable, .. } => {
-                Some(&constraint.symbols[variable.index()])
+                Some(&constraint.symbols()[variable.index()])
             }
             _ => None,
         }
@@ -844,7 +844,7 @@ mod tests {
         };
         // Deterministic, and `addition_undoes_to_subtraction` is what pins the
         // definition it produces.
-        assert_eq!(constraint.symbols[variable.index()], "x1");
+        assert_eq!(constraint.symbols()[variable.index()], "x1");
     }
 
     /// Peeling needs the variable to occur *once* — "linear in it", in the term
@@ -868,7 +868,7 @@ mod tests {
         let Shape::Driven { variable } = shape(&constraint) else {
             panic!("x2 occurs once and should drive");
         };
-        assert_eq!(constraint.symbols[variable.index()], "x2");
+        assert_eq!(constraint.symbols()[variable.index()], "x2");
     }
 
     /// Only the arithmetic operators have an inverse here. Everything else
@@ -939,7 +939,7 @@ mod tests {
         let Shape::Driven { variable, .. } = shape(&constraint) else {
             panic!("y == x1 + x2 should drive y");
         };
-        assert_eq!(constraint.symbols[variable.index()], "y");
+        assert_eq!(constraint.symbols()[variable.index()], "y");
     }
 
     /// The taxonomy is about equalities. A comparison has no side that defines

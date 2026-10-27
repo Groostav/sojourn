@@ -2972,7 +2972,7 @@ the census extents is Artemis's follow-up 2, not ours.
   before `all` collapses it; the v1 arity of one is `max` over it.
 - The initial design is `FeasibleSamples::take`. "Region is empty" is already a startup verdict
   (`Satisfiability::Unsatisfiable`), not a runtime error.
-- The zero-tolerance rejection Artemis's note relies on is real: `parse.rs` refuses
+- The zero-tolerance rejection Artemis's note relies on is real: `frontend/syntax.rs` refuses
   `tolerance <= 0.0`, so every equality is a slab with volume.
 - The walker's chord is the *idea* repair is built from — a segment from a feasible point, with
   feasibility found along it — but not the code: the walker's shrinkage *draws* its step, and a

@@ -610,8 +610,8 @@ mod tests {
 
     fn integral(source: &str) -> bool {
         let ast = crate::parse(source).expect("the fixture parses");
-        let env = vec![false; ast.program.frame_size as usize];
-        is_integral(&ast.program.body.result, &env)
+        let env = vec![false; ast.program().frame_size as usize];
+        is_integral(&ast.program().body.result, &env)
     }
 
     /// One row of the table each, for the rows the compile-time tests do not
@@ -636,7 +636,7 @@ mod tests {
 
     fn kinds(source: &str) -> Vec<&'static str> {
         let ast = crate::parse(source).expect("the fixture parses");
-        ast.program
+        ast.program()
             .body
             .iter_preorder()
             .map(|expr| match &expr.kind {
@@ -688,7 +688,7 @@ mod tests {
         let ast = crate::parse(source).expect("the fixture parses");
         // the assignment: binary[global, subscript[unary[global]]] = 5
         // the result: compare[unary[local], binary[binary[global, literal], local]] = 8
-        assert_eq!(ast.program.body.iter_preorder().count(), 13);
+        assert_eq!(ast.program().body.iter_preorder().count(), 13);
 
         let at = Span::new(0, 1);
         let leaf = || Expr::new(Kind::Literal(1.0), at);
@@ -732,8 +732,8 @@ mod tests {
     #[test]
     fn locals_are_integral_when_what_bound_them_was() {
         let ast = crate::parse("var a = floor(x1); var b = a / 2; a + 1").expect("parses");
-        let mut env = vec![false; ast.program.frame_size as usize];
-        assert!(super::block_is_integral(&ast.program.body, &mut env));
+        let mut env = vec![false; ast.program().frame_size as usize];
+        assert!(super::block_is_integral(&ast.program().body, &mut env));
         assert_eq!(env, vec![true, false]);
         assert!(integral("sum(1, 3, i -> 2 * i - 1)"));
         assert!(!integral("sum(1, 3, i -> i / 2)"));

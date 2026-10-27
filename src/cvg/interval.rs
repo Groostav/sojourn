@@ -900,7 +900,7 @@ mod tests {
                 .zip(drawn.iter().copied())
                 .collect();
 
-            let Ok(value) = eval::eval_one(&ast.source, &bindings) else {
+            let Ok(value) = eval::eval_one(ast.source(), &bindings) else {
                 continue;
             };
             assert!(

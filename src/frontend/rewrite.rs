@@ -1526,6 +1526,7 @@ fn unrolled(base: Expr, n: i64, span: Span, frame_size: &mut u32) -> Expr {
 mod tests {
     use super::*;
     use crate::eval;
+    use crate::frontend::syntax;
 
     /// `Pow(_, n)` at the root of a parsed expression, or `None`.
     fn power_at_root(source: &str) -> Option<(Kind, i64)> {
@@ -1615,7 +1616,7 @@ mod tests {
             ("(x * x) * (x * (x * x))", 4),
             ("(a + b)^2 * (a + b)^3", 4),
         ] {
-            let raw = crate::frontend::translate(source).expect("should translate");
+            let raw = syntax::raw_ast(source).expect("should translate");
             let program = fold_constants(raw.program).expect("folds");
             let program = unroll_aggregates(invert_monotone(program)).expect("unrolls");
             let raw = Ast {

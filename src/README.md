@@ -34,7 +34,7 @@ neither backend's lowering is visible to the other**.
 
 ## The front end
 
-`translate`, then `rewrite::canonicalize`: four passes in a fixed order, which
+`syntax::raw_ast`, then `rewrite::canonicalize`: four passes in a fixed order, which
 `parse` in [`frontend/mod.rs`](frontend/mod.rs) runs and reads top to bottom.
 It is crate-private: a caller hands source text to `compile`, to
 `compile_system` or to `ConstraintSystem::new`, and the tree between is
@@ -48,7 +48,7 @@ and the tapes are `eval`'s as ever.)
 ```
               fold_constants   check_subscripts   invert_monotone   unroll_aggregates   collect_powers
  source ─►  ──────────────►  ───────────────►  ──────────────►  ──────────────►  ─────────────►  Ast
-      translate (fallible)      (fallible)                          (fallible)
+        raw_ast (fallible)      (fallible)                          (fallible)
             └───────────────────────────── rewrite::canonicalize ─────────────────────────────┘
 ```
 
@@ -58,7 +58,7 @@ is `cvg`, which never lowers it at all.
 
 | phase | entry point | what it does |
 |---|---|---|
-| parse & lower | `frontend::translate` | ANTLR parse tree to `ast::Program`; resolves names to `GlobalId`/`LocalSlot`, records `is_constraint` |
+| parse & lower | `syntax::raw_ast` | ANTLR parse tree to a `RawAst`; resolves names to `GlobalId`/`LocalSlot`, records `is_constraint` |
 | fold constants | `rewrite::fold_constants` | every subtree made only of literals becomes one `Kind::Literal` |
 | check subscripts | `rewrite::check_subscripts` | a subscript is integral by construction (`ast::is_integral`) or a compile error; nothing is rewritten |
 | invert monotone | `rewrite::invert_monotone` | `f(u) op c` becomes `u op' c'` for the strictly monotone `f` |
@@ -212,7 +212,7 @@ gone such a file is only the tape agreeing with itself.
 | | |
 |---|---|
 | [`ast.rs`](ast.rs) | `Program`, `Block`, `Expr`, `Kind`, and the operator semantics in `UnaryOp::apply` / `BinaryOp::apply` |
-| [`frontend/`](frontend) | text to `Ast`: `parse` and the `Ast` type in `mod.rs`, `parse.rs`, the `rewrite.rs` passes, the ANTLR output |
+| [`frontend/`](frontend) | text to `Ast`: `parse` and the `Ast` type in `mod.rs`, `syntax.rs` (the ANTLR walk, to a `RawAst`), the `rewrite.rs` passes, the ANTLR output |
 | [`eval/`](eval) | `compile`, the tape (`tape.rs`, `irgen.rs` — IR generation, the tree walked once and instructions emitted, Clang's name for the step — `regalloc.rs`), `differentiate.rs` (the reverse sweep: a tape's gradient as a tape), its two CPU executors (`tile.rs`, `lane.rs`), and `wgsl.rs`, which turns a tape into the view that `templates/wgsl/` renders as a WGSL function for the GPU sieve |
 | [`diagnostics.rs`](diagnostics.rs) | `ProblemKind`, spans, and rendering |
 | [`generated.rs`](generated.rs) | ANTLR output, not hand-edited |

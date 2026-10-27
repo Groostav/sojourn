@@ -70,11 +70,11 @@ pub(crate) struct Frames {
 /// constraint's own symbols by index — the order a caller's `globals` come in
 /// — and the tree is lowered as parsed, whole powers intact.
 pub(crate) fn compile(constraint: &Ast) -> IntervalTape {
-    let symbol_count = constraint.symbols.len();
+    let symbol_count = constraint.symbols().len();
     let positions: Vec<u32> = (0..symbol_count)
         .map(|index| u32::try_from(index).expect("fewer than four billion symbols"))
         .collect();
-    let tape: VirtualTape = irgen::emit(&constraint.program, &positions).single_assignment();
+    let tape: VirtualTape = irgen::emit(constraint.program(), &positions).single_assignment();
 
     let consts = tape.consts.values().to_vec();
     let locals = usize::from(tape.locals);
@@ -423,10 +423,10 @@ mod tests {
 
     fn symbol(ast: &Ast, name: &str) -> GlobalId {
         let index = ast
-            .symbols
+            .symbols()
             .iter()
             .position(|symbol| symbol == name)
-            .unwrap_or_else(|| panic!("{name} is not a symbol of {}", ast.source));
+            .unwrap_or_else(|| panic!("{name} is not a symbol of {}", ast.source()));
         GlobalId::from_index(u32::try_from(index).expect("small"))
     }
 

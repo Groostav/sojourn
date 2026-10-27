@@ -1,7 +1,7 @@
-//! Lexes and parses text into [`crate::ast`].
+//! Lexes and parses text into [`crate::ast`], as a [`RawAst`].
 //!
 //! **This is the only module allowed to name `antlr4_runtime`.** ANTLR exists
-//! purely as a compile step; once [`translate`] returns, everything downstream deals
+//! purely as a compile step; once [`raw_ast`] returns, everything downstream deals
 //! in babel's own owned types. The borrow checker helps enforce this — the parse
 //! tree is arena-owned and every typed context borrows from it, so an AST
 //! holding ANTLR types could not outlive the parse.
@@ -30,8 +30,10 @@ use crate::frontend::generated::parser::{
     ScalarEvaluableContext, ScalarExprContext, StatementBlockContext, StatementContext,
 };
 
-/// Everything compilation learns from walking the parse tree.
-pub(crate) struct Lowered {
+/// Everything compilation learns from walking the parse tree: the tree as
+/// written, names resolved, before [`rewrite::canonicalize`](super::rewrite::canonicalize)
+/// makes it an [`Ast`](super::Ast).
+pub(super) struct RawAst {
     pub program: Program,
     /// Distinct statically-referenced names in first-reference order.
     pub symbols: Vec<String>,
@@ -84,9 +86,6 @@ impl<R: Recognizer + ?Sized> ErrorListener<R> for ErrorSink {
     }
 }
 
-/// Anything babel parses but this build cannot yet translate.
-///
-/// These are emphatically not syntax errors — `sum(1,3,i->i)` is valid babel.
 /// The source range a parse-tree context covers.
 ///
 /// `Token::start`/`stop` are already measured in Unicode scalar values, so this
@@ -119,9 +118,9 @@ fn aggregate_kind(ctx: &ScalarExprContext<'_>) -> Option<AggregateKind> {
 /// Parses `source` from the `scalar_evaluable` entry rule and translates the result to an AST.
 ///
 /// # Errors
-/// Returns every syntax error found, or a single "not supported yet" problem for
-/// constructs outside V0.1's scope.
-pub(crate) fn translate(source: &str) -> Result<Lowered, Vec<Problem>> {
+/// Returns every syntax error found, or a single problem for an equality
+/// tolerance that is non-finite or not positive.
+pub(super) fn raw_ast(source: &str) -> Result<RawAst, Vec<Problem>> {
     let sink = ErrorSink::new(source);
 
     let parsed: ParsedFile = parser::parse_with_parser_constructor(
@@ -153,7 +152,7 @@ pub(crate) fn translate(source: &str) -> Result<Lowered, Vec<Problem>> {
         .and_then(ScalarEvaluableContext::from_rule_node)
         .expect("a well-formed parse guarantees this expression");
 
-    SemanticTranslator { source }.translate_program(&root)
+    SemanticTranslator { source }.translate_scalar_evaluable(&root)
 }
 
 /// Whether `name` parses cleanly as a lone variable.
@@ -187,12 +186,6 @@ fn make_lexer(input: InputStream, err_sink: ErrorSink) -> BabelLexer<InputStream
     lexer
 }
 
-/// Translates a parse tree into an AST.
-///
-/// Deliberately holds no accumulator state: everything the translation produces
-/// comes back through the return value, and the symbol table is threaded as an
-/// explicit parameter. That keeps every method `&self` and stops the outputs
-/// leaking out through a side channel.
 /// Translates a parse tree into an AST.
 ///
 /// Stateless: the accumulators live in [`TranslationState`], threaded
@@ -289,7 +282,10 @@ impl TranslationState {
 
 impl SemanticTranslator<'_> {
     /// Walks a parsed `scalar_evaluable` tree and builds the AST.
-    fn translate_program(&self, ctx: &ScalarEvaluableContext<'_>) -> Result<Lowered, Vec<Problem>> {
+    fn translate_scalar_evaluable(
+        &self,
+        ctx: &ScalarEvaluableContext<'_>,
+    ) -> Result<RawAst, Vec<Problem>> {
         let mut state = TranslationState::default();
         let block = ctx
             .statement_block()
@@ -307,7 +303,7 @@ impl SemanticTranslator<'_> {
 
         let body = self.translate_block(&block, &mut state)?;
 
-        Ok(Lowered {
+        Ok(RawAst {
             program: Program {
                 body,
                 frame_size: state.next_slot,

@@ -139,18 +139,18 @@ pub(crate) fn bind(
     gradient: Gradient,
 ) -> Result<CompiledExpression, CompilationFailure> {
     let resolved;
-    let ast = if ast.contains_dynamic_lookup {
+    let ast = if ast.contains_dynamic_lookup() {
         resolved = rewrite::resolve_subscripts(ast.clone(), schema)
-            .map_err(|fault| crate::frontend::failure(&ast.source, vec![fault]))?;
+            .map_err(|fault| crate::frontend::failure(ast.source(), vec![fault]))?;
         &resolved
     } else {
         ast
     };
 
-    let mut global_positions = Vec::with_capacity(ast.symbols.len());
+    let mut global_positions = Vec::with_capacity(ast.symbols().len());
     let mut problems = Vec::new();
 
-    for (symbol, span) in ast.symbols.iter().zip(ast.reference_spans()) {
+    for (symbol, span) in ast.symbols().iter().zip(ast.reference_spans()) {
         match schema.names.iter().position(|name| name == symbol) {
             Some(position) => {
                 let pos = u32::try_from(position).unwrap_or(u32::MAX);
@@ -161,13 +161,13 @@ pub(crate) fn bind(
                 // expression is the honest fallback.
                 let whole = Span::new(
                     0,
-                    u32::try_from(ast.source.chars().count()).unwrap_or(u32::MAX),
+                    u32::try_from(ast.source().chars().count()).unwrap_or(u32::MAX),
                 );
                 problems.push(Problem::new(
                     ProblemKind::Unbound {
                         name: symbol.clone(),
                     },
-                    &ast.source,
+                    ast.source(),
                     span.unwrap_or(whole),
                 ));
             }
@@ -176,14 +176,14 @@ pub(crate) fn bind(
 
     if !problems.is_empty() {
         return Err(CompilationFailure {
-            source: ast.source.clone(),
+            source: ast.source().to_owned(),
             problems,
         });
     }
 
     // The evaluator's own view of the tree: whole powers as the
     // multiplications they are, which no other consumer wants.
-    let program = rewrite::unroll_powers(ast.program.clone());
+    let program = rewrite::unroll_powers(ast.program().clone());
     let virtual_tape = irgen::emit(&program, &global_positions);
     let partial_diff =
         match gradient {
@@ -191,20 +191,20 @@ pub(crate) fn bind(
             Gradient::BestEffort => differentiate::differentiate(&virtual_tape, &global_positions)
                 .map(|derivative| CompiledGradient {
                     tape: derivative.allocate(),
-                    source: ast.source.clone(),
+                    source: ast.source().to_owned(),
                     schema: schema.clone(),
-                    symbols: ast.symbols.clone(),
+                    symbols: ast.symbols().to_vec(),
                 }),
         };
 
     Ok(CompiledExpression {
         tape: virtual_tape.allocate(),
         gradient: partial_diff,
-        source: ast.source.clone(),
+        source: ast.source().to_owned(),
         schema: schema.clone(),
-        symbols: ast.symbols.clone(),
-        is_constraint: ast.is_constraint,
-        uses_dynamic_lookup: ast.contains_dynamic_lookup,
+        symbols: ast.symbols().to_vec(),
+        is_constraint: ast.is_constraint(),
+        uses_dynamic_lookup: ast.contains_dynamic_lookup(),
     })
 }
 

@@ -334,8 +334,11 @@ the externals and outputs it names after the inputs, and a row's shape is a
 `RowLayout { inputs, intermediates }` — the two regions, named that way
 everywhere — handed to the executors beside the batch; a gather is bounded by
 its `inputs`, the width is its `total()`, and `var[floor(x1)]` past the
-inputs faults rather than reading an output. For `compile` and
-`ConstraintSystem` a row is all inputs. A subscript the
+inputs faults rather than reading an output. `compile` takes the two
+regions as `Variables` — a plain list is all inputs — and its row is every
+input, whether named or not, so `var[5]` never moves, then only the
+intermediates the source names, since one may not exist yet; `rows()` says
+which. For `ConstraintSystem` a row is all inputs. A subscript the
 row decides must be a whole number by construction — `floor`/`ceil` outermost
 or inside exact integer arithmetic, an aggregate's parameter; the table is
 `ast::is_integral`, the crate's one type judgement, and extending it is a

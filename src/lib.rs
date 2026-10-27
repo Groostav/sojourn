@@ -118,7 +118,7 @@ mod system;
 pub(crate) use eval::Schema;
 pub(crate) use frontend::{Ast, parse};
 
-pub use eval::{CompiledExpression, CompiledGradient, Compiler, Gradient, compile};
+pub use eval::{CompiledExpression, CompiledGradient, Compiler, Gradient, Variables, compile};
 pub use nodes::{CompiledNode, Symbol, compile_system};
 pub use repair::RepairError;
 pub use solve::{

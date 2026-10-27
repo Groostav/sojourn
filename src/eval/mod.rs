@@ -43,19 +43,90 @@ pub(crate) const EPSILON: f64 = f64::MIN_POSITIVE;
 /// Compiles `source` against `variables` with the defaults: the shorthand
 /// for [`Compiler::new().compile(..)`](Compiler::compile).
 ///
-/// `variables` is every name the expression may use, in the order a batch's
-/// rows will come in. Order matters beyond that: `var[i]` indexes into this
-/// list, one-based.
+/// `variables` is every name the expression may use: a plain list (`&["x1",
+/// "x2"]`, a `Vec`, a slice), every one of them an input, or
+/// [`Variables::classified`], inputs and intermediates. The rows a batch
+/// comes in are [`CompiledExpression::rows`].
 ///
 /// # Errors
 /// [`CompilationFailure`] with every problem found — parsing does not stop at
 /// the first; a name `variables` lacks is one, at its first reference, and so
-/// is a literal subscript past the end of `variables`, at the subscript.
-pub fn compile<S: AsRef<str>>(
+/// is a literal subscript past the inputs, at the subscript.
+pub fn compile<'a>(
     source: &str,
-    variables: &[S],
+    variables: impl Into<Variables<'a>>,
 ) -> Result<CompiledExpression, CompilationFailure> {
     Compiler::new().compile(source, variables)
+}
+
+/// The names an expression may use, and which of them `var[i]` may index.
+///
+/// Two kinds. An **input** is a coordinate of the design vector: known
+/// before anything runs, indexed by `var[i]`, one-based, in declaration
+/// order, and given a row whether the expression names it or not — so
+/// `var[5]` is the same input whatever else the expression reads. An
+/// **intermediate** is a name produced elsewhere — a simulation's result,
+/// another expression's output — that may not exist yet when the inputs do:
+/// bound by name only, out of reach of every subscript, and given a row only
+/// where the expression names it, so a caller is never asked for a value the
+/// expression does not use.
+///
+/// A plain list converts into this as every name an input, which is what
+/// [`compile`] has always taken; [`classified`](Self::classified) says which
+/// is which. A value, not a trait: the conversion happens once at the door
+/// and everything past it is one code path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variables<'a> {
+    inputs: Vec<&'a str>,
+    intermediates: Vec<&'a str>,
+}
+
+impl<'a> Variables<'a> {
+    /// `inputs` in declaration order, which `var[i]` indexes, and
+    /// `intermediates` in the order their rows follow the inputs.
+    ///
+    /// # Panics
+    /// If a name appears twice, in one list or across both. A document that
+    /// declares a name twice is its parser's to refuse, under the name the
+    /// author wrote; by here it is the caller's bug, and binding the first
+    /// silently would make `var[i]` and a row disagree about what it is.
+    #[must_use]
+    pub fn classified<S: AsRef<str>>(inputs: &'a [S], intermediates: &'a [S]) -> Self {
+        let inputs: Vec<&'a str> = inputs.iter().map(AsRef::as_ref).collect();
+        let intermediates: Vec<&'a str> = intermediates.iter().map(AsRef::as_ref).collect();
+        let every: Vec<&str> = inputs.iter().chain(&intermediates).copied().collect();
+        for (at, name) in every.iter().enumerate() {
+            assert!(
+                !every[..at].contains(name),
+                "{name:?} declared twice: inputs {inputs:?}, intermediates {intermediates:?}"
+            );
+        }
+        Self {
+            inputs,
+            intermediates,
+        }
+    }
+}
+
+impl<'a, S: AsRef<str>> From<&'a [S]> for Variables<'a> {
+    fn from(names: &'a [S]) -> Self {
+        Self {
+            inputs: names.iter().map(AsRef::as_ref).collect(),
+            intermediates: Vec::new(),
+        }
+    }
+}
+
+impl<'a, S: AsRef<str>, const N: usize> From<&'a [S; N]> for Variables<'a> {
+    fn from(names: &'a [S; N]) -> Self {
+        Self::from(names.as_slice())
+    }
+}
+
+impl<'a, S: AsRef<str>> From<&'a Vec<S>> for Variables<'a> {
+    fn from(names: &'a Vec<S>) -> Self {
+        Self::from(names.as_slice())
+    }
 }
 
 /// Whether a compiled expression comes with its gradient.
@@ -100,19 +171,33 @@ impl Compiler {
     }
 
     /// Parses `source` and binds it to `variables`: the one call that turns
-    /// text into something that runs.
+    /// text into something that runs. See [`Variables`] for which rows the
+    /// result takes.
     ///
     /// # Errors
     /// [`CompilationFailure`] with every problem found — parsing does not
     /// stop at the first, and a name `variables` lacks is one, at its first
     /// reference.
-    pub fn compile<S: AsRef<str>>(
+    pub fn compile<'a>(
         &self,
         source: &str,
-        variables: &[S],
+        variables: impl Into<Variables<'a>>,
     ) -> Result<CompiledExpression, CompilationFailure> {
+        let Variables {
+            inputs,
+            intermediates,
+        } = variables.into();
         let ast = crate::parse(source)?;
-        bind(&ast, &Schema::for_names(variables), self.gradient)
+        // Only an intermediate the source names gets a row. A subscript
+        // cannot reach one, so nothing past this filter can want another.
+        let named = intermediates
+            .into_iter()
+            .filter(|name| ast.symbols().iter().any(|symbol| symbol == name));
+        bind(
+            &ast,
+            &Schema::with_intermediates(inputs, named),
+            self.gradient,
+        )
     }
 }
 
@@ -147,28 +232,34 @@ pub(crate) fn bind(
         ast
     };
 
+    // A symbol nothing references has nowhere to point; the whole
+    // expression is the honest fallback.
+    let whole = Span::new(
+        0,
+        u32::try_from(ast.source().chars().count()).unwrap_or(u32::MAX),
+    );
+    let reference_spans: Vec<Span> = ast
+        .reference_spans()
+        .into_iter()
+        .map(|span| span.unwrap_or(whole))
+        .collect();
+
     let mut global_positions = Vec::with_capacity(ast.symbols().len());
     let mut problems = Vec::new();
 
-    for (symbol, span) in ast.symbols().iter().zip(ast.reference_spans()) {
+    for (symbol, &span) in ast.symbols().iter().zip(&reference_spans) {
         match schema.names.iter().position(|name| name == symbol) {
             Some(position) => {
                 let pos = u32::try_from(position).unwrap_or(u32::MAX);
                 global_positions.push(pos);
             }
             None => {
-                // A symbol nothing references has nowhere to point; the whole
-                // expression is the honest fallback.
-                let whole = Span::new(
-                    0,
-                    u32::try_from(ast.source().chars().count()).unwrap_or(u32::MAX),
-                );
                 problems.push(Problem::new(
                     ProblemKind::Unbound {
                         name: symbol.clone(),
                     },
                     ast.source(),
-                    span.unwrap_or(whole),
+                    span,
                 ));
             }
         }
@@ -203,6 +294,7 @@ pub(crate) fn bind(
         source: ast.source().to_owned(),
         schema: schema.clone(),
         symbols: ast.symbols().to_vec(),
+        reference_spans,
         is_constraint: ast.is_constraint(),
         uses_dynamic_lookup: ast.contains_dynamic_lookup(),
     })
@@ -227,6 +319,8 @@ pub struct CompiledExpression {
     schema: Schema,
     /// The names the source refers to, in first-reference order.
     symbols: Vec<String>,
+    /// Where each of `symbols` is first referenced, indexed alike.
+    reference_spans: Vec<Span>,
     is_constraint: bool,
     uses_dynamic_lookup: bool,
 }
@@ -248,11 +342,12 @@ impl CompiledExpression {
 
     /// Whether the expression reads a variable by position, `var[i]`.
     ///
-    /// A subscript is a one-based index into the whole variable list in
-    /// declaration order, so such an expression can read a variable it never
-    /// names and [`references`](Self::references) is not the whole story.
+    /// A subscript is a one-based index into the inputs in declaration
+    /// order, so such an expression can read an input it never names and
+    /// [`references`](Self::references) is not the whole story.
     /// **A caller must not prune columns it believes are unreferenced while
-    /// this is true.**
+    /// this is true** — [`rows`](Self::rows) is the list to build a batch
+    /// from, and already accounts for it.
     #[must_use]
     pub const fn uses_dynamic_lookup(&self) -> bool {
         self.uses_dynamic_lookup
@@ -262,6 +357,24 @@ impl CompiledExpression {
     #[must_use]
     pub fn references(&self) -> BTreeSet<&str> {
         self.symbols.iter().map(String::as_str).collect()
+    }
+
+    /// The rows [`eval`](Self::eval) takes, in order: every input, then the
+    /// intermediates the source names, in the order they were listed (see
+    /// [`Variables`]).
+    #[must_use]
+    pub fn rows(&self) -> &[String] {
+        self.schema.names()
+    }
+
+    /// Each name the source mentions, with the span of its first reference,
+    /// in first-reference order: where to put a caret on a problem a caller
+    /// finds with a name — a cycle, a boolean read as a number.
+    pub fn reference_spans(&self) -> impl Iterator<Item = (&str, Span)> {
+        self.symbols
+            .iter()
+            .map(String::as_str)
+            .zip(self.reference_spans.iter().copied())
     }
 
     /// The gradient of this expression — of its residual, for a constraint —
@@ -574,9 +687,11 @@ impl CompiledGradient {
 /// the coordinates a caller chooses, and the only rows `var[i]` may name.
 /// The **intermediates** follow — externals and other expressions' outputs,
 /// present because an expression names them, bindable by name only. For
-/// [`compile`] and for a [`ConstraintSystem`](crate::ConstraintSystem) every
-/// row is an input; [`compile_system`](crate::compile_system) lays a node's
-/// row out as the inputs it reads followed by what else it names.
+/// [`compile`] these are [`Variables`]' two lists, every input followed by
+/// the intermediates the source names; for a
+/// [`ConstraintSystem`](crate::ConstraintSystem) every row is an input;
+/// [`compile_system`](crate::compile_system) lays a node's row out as the
+/// inputs it reads followed by what else it names.
 ///
 /// One value rather than two counts, because both go everywhere a row goes
 /// — an executor checks the row against [`total`](Self::total) and bounds a
@@ -646,7 +761,8 @@ impl Schema {
     }
 
     /// A schema over a slice of anything string-like: `&["x1", "x2"]`, a
-    /// `Vec<String>`, a caller's own list.
+    /// `Vec<String>`, a caller's own list, for the tests of the pieces.
+    #[cfg(test)]
     pub(crate) fn for_names<S: AsRef<str>>(names: &[S]) -> Self {
         Self::new(names.iter().map(AsRef::as_ref))
     }

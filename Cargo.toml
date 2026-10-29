@@ -1,9 +1,17 @@
 [package]
 name = "sojourn"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Constrained random vector generation over a small expression language"
 license = "Apache-2.0"
+repository = "https://github.com/groostav/sojourn"
+readme = "README.md"
+keywords = ["sampling", "constraints", "interval-arithmetic", "experiment-design", "optimization"]
+categories = ["science", "mathematics", "algorithms", "simulation"]
+# What the build needs and nothing else. `tests/` reads and writes
+# `performance-records/` and `docs/`, so it stays in the repository with them;
+# the README's relative links resolve against `repository` on crates.io.
+include = ["/src", "/grammar", "/templates", "/build.rs", "/README.md", "/LICENSE"]
 
 [dependencies]
 antlr-rust-runtime = "0.34"
@@ -48,3 +56,7 @@ default = []
 # on the machine, and a search can hold the GPU flat out for seconds. Without
 # it brute force runs on the CPU threads, which is also the reference path.
 gpu = ["dep:wgpu", "dep:pollster"]
+
+# docs.rs documents the sieve's switches too; building docs opens no device.
+[package.metadata.docs.rs]
+features = ["gpu"]

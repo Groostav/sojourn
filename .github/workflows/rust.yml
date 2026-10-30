@@ -8,7 +8,7 @@ name: rust
 
 on:
   push:
-    branches: [master, v2-native]
+    branches: [main, master, v2-native]
   pull_request:
   workflow_dispatch:
 
@@ -39,7 +39,7 @@ jobs:
       # RustPython. A cold build is about a minute.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/v2-native' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/v2-native' }}
           cache-on-failure: true
 
       - uses: taiki-e/install-action@v2
@@ -73,7 +73,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/v2-native' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/v2-native' }}
           cache-on-failure: true
 
       - uses: taiki-e/install-action@v2

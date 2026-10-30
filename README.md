@@ -1,14 +1,33 @@
 # Sojourn
 
-Write down a box and some constraints, and Sojourn finds points that satisfy them.
-You get a witness, a space-filling design spread across the region, and the nearest
-feasible point to any point you give it. Or you get a proof that no such point exists,
-naming the constraints that conflict.
+> Prune with intervals, polish with Newton, and when all else fails, roll a billion dice.
 
-The constraints are written in babel, a small expression language: `x1 + x2 * cos(x3)^2`
+Give Sojourn a box (bounds on each variable) and some constraints, and it finds points
+that satisfy them: a first feasible point, a space-filling design across the feasible
+region, and the nearest feasible point to any point you hand it. When the constraints
+contradict each other it can often prove so, and names the ones that conflict.
+
+Constraints are written in babel, a small expression language: `x1 + x2 * cos(x3)^2`
 is a transform, `x1 < x2 + x3` is a constraint, and `y == sqrt(x) +/- 1.0e-9` is an
-equality with the tolerance it is held to. The crate is pure Rust, with no C toolchain
-and no SMT solver. Source text goes in, and no syntax tree comes out.
+equality with the tolerance it must hold to. You pass source text and never build a
+syntax tree. The crate is pure Rust, with no C toolchain.
+
+Add it alongside [`faer`](https://crates.io/crates/faer), whose matrices the API takes
+and returns:
+
+```toml
+[dependencies]
+sojourn = "0.4"
+faer = "0.24"
+```
+
+## What `solve` gives back
+
+One of three things: a region to sample points from, a proof that there is none naming
+the constraints that conflict, or an honest shrug when the search spent its budget and
+could tell neither way.
+
+### A region to sample
 
 ```rust
 use faer::Mat;
@@ -17,42 +36,33 @@ use sojourn::{ConstraintSystem, InputVariable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new_continuous("x", -2.0, 2.0), InputVariable::new_continuous("y", -2.0, 2.0)],
-        ["x^2 + y^2 < 1", "x + y > 0.5"],
+        vec![InputVariable::new_continuous("x", -3.0, 3.0), InputVariable::new_continuous("y", -3.0, 3.0)],
+        ["x^2 + y^2 < 4", "x^2 + y^2 > 1", "y > x - 1"], // a ring, with a bite out of it
     )?;
-
     // The generator is yours: seed it, and the run is the same on every machine.
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
     let region = sojourn::solve(&system, &mut rng)?;
 
-    // An optimizer stepped outside. Bring it back to the nearest feasible point,
-    // a hair (1e-12 of the box) clear of every wall.
-    let fixed = region.repair(&[3.0, 4.0], 1e-12)?;
-    println!("{fixed:.3?}"); // [0.600, 0.800]: straight down the radius
-    let fixed = region.repair(&[-1.0, -1.0], 1e-12)?;
-    println!("{fixed:.3?}"); // [0.250, 0.250]: along the half-plane's normal
-
-    // Six more points, spread away from that one and from each other.
     // One column per point, one row per variable.
-    let existing = Mat::from_fn(2, 1, |row, _| fixed[row]);
-    let design = region.sample(existing.as_ref(), 6, &mut rng)?;
-    assert_eq!((design.nrows(), design.ncols()), (2, 6));
+    let design = region.sample(Mat::zeros(0, 0).as_ref(), 6, &mut rng)?;
+    for c in 0..design.ncols() {
+        println!("({:.2}, {:.2})", design[(0, c)], design[(1, c)]);
+    }
+    // (1.10, 0.24)
+    // (-1.99, -0.20)
+    // (-0.55, 1.92)
+    // (-0.23, -1.22)
+    // (1.00, 1.70)
+    // (-0.90, 0.53)
     Ok(())
 }
 ```
 
-Sojourn is consumed as a cargo git dependency; it is not on crates.io. Matrices are
-[`faer`](https://crates.io/crates/faer)'s.
+A design is spread out on purpose: each point is picked from a pool of feasible
+candidates to be far from the points already chosen, including any you pass in.
+Carrying on with the same generator gives the next design.
 
-```toml
-[dependencies]
-sojourn = { git = "https://github.com/groostav/sojourn", tag = "v0.2.0" }
-faer = "0.24"
-```
-
-## Things it does
-
-### Proves a contradiction and names the constraints involved
+### A proof, naming the constraints
 
 ```rust
 use sojourn::rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
@@ -70,16 +80,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The answer takes tens of microseconds. It comes from a proof: interval contraction
-emptied a coordinate, and the blame is the trace of that proof. `x1 + x2 < 20` is not
-named because it narrowed nothing. When nothing can be proved, Sojourn says so. A
-contradiction too thin for an enclosure to see (`x + y <= 1` against
-`x + y >= 1.000000001`) spends its budget and comes back as `Infeasibility::NotFound`,
-which reads *"no feasible point was found: nothing proved the region empty and sampling
-found nothing"*. That is a different sentence and it sends you somewhere else, so it
-is a different variant.
+This takes tens of microseconds. Interval contraction emptied a coordinate, and the
+constraints named are the ones that emptied it; `x1 + x2 < 20` narrowed nothing, so it
+is not blamed.
 
-### Samples measure-zero sets
+### A shrug
+
+```rust
+use sojourn::rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
+use sojourn::{ConstraintSystem, InputVariable};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let system = ConstraintSystem::new(
+        vec![InputVariable::new_continuous("x", 0.0, 1.0), InputVariable::new_continuous("y", 0.0, 1.0)],
+        ["x + y <= 1", "x + y >= 1.000000001"], // a contradiction a billionth thick
+    )?;
+    let verdict = sojourn::solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(1)).unwrap_err();
+    println!("{verdict}");
+    // no feasible point was found: nothing proved the region empty and sampling found nothing
+    Ok(())
+}
+```
+
+Too thin for an interval enclosure to see, so the search spends its whole budget (a
+billion proposals by default, under two seconds in release) and returns
+`Infeasibility::NotFound`. That claims nothing: the region may be empty, or just too
+small to hit. Algebraic contradictions such as `x*x - 2*x*y + y*y < 0` end here too.
+`ConstraintSolver::with_proposal_budget` sets how long to keep trying.
+
+## What else it does
+
+### Repairs a point
+
+```rust
+use sojourn::rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
+use sojourn::{ConstraintSystem, InputVariable};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let system = ConstraintSystem::new(
+        vec![InputVariable::new_continuous("x", -2.0, 2.0), InputVariable::new_continuous("y", -2.0, 2.0)],
+        ["x^2 + y^2 < 1", "x + y > 0.5"],
+    )?;
+    let region = sojourn::solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(42))?;
+
+    // An optimizer stepped outside. Bring it back to the nearest feasible point,
+    // a hair (1e-12 of the box) clear of every wall.
+    println!("{:.3?}", region.repair(&[3.0, 4.0], 1e-12)?); // [0.600, 0.800]: straight down the radius
+    println!("{:.3?}", region.repair(&[-1.0, -1.0], 1e-12)?); // [0.250, 0.250]: along the half-plane's normal
+    Ok(())
+}
+```
+
+Nearest is Euclidean over the box-normalised coordinates, and a repair depends only on
+the region, the point and the clearance: the same call lands in the same place.
+
+### Walks along equalities
 
 ```rust
 use faer::Mat;
@@ -102,15 +157,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Rejection sampling lands one point here in about two hundred million proposals. Sojourn
-reads the equality first. `x * y == 0` can be solved for `x` and also for `y`, so there
-is one *plan* per arm. Each point uses the plan that pins it hardest, which is the arm
-it stands on, and the walker computes the driven coordinate by drawing from the
-tolerance band instead of searching for it. At the crossing, the walker's chains split
-across both arms. A variable named on both sides (`a == b + a/2`) cannot be driven, and
-`ConstraintSystem::new` refuses it by name, giving the rearrangement (`a/2 - b == 0`).
+Rejection sampling lands one point here in about two hundred million proposals.
+Sojourn reads the equality first: `x * y == 0` can be solved for either variable, so
+the walker computes the driven coordinate inside the tolerance band instead of
+searching for it, on whichever arm the point stands. A variable named on both sides
+(`a == b + a/2`) cannot be driven, and `ConstraintSystem::new` refuses it, suggesting
+the rearrangement (`a/2 - b == 0`).
 
-### Takes discrete variables, and says when the levels are the problem
+### Takes discrete variables
 
 ```rust
 use faer::Mat;
@@ -149,65 +203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 A variable is continuous, a lattice (`lower, step, upper`), or a list of levels, and a
-discrete one takes its levels and nothing between them. A lattice is read as the
-decimals you wrote, so the levels of `0, 0.1, …, 1` are exactly the literals and
-`t <= 0.3` holds at the fourth one. The continuous load above is computed from the
-discrete choices, which are never computed from anything. Interval reasoning rounds onto
-levels, so `22.2 < teeth < 22.8` is a proof. When the constraints could be met
-continuously, the verdict is `Infeasibility::BetweenLevels`, carrying a continuous
-witness: the formula is fine, and it's the step or the list of levels that needs to
-change. A system of discrete variables alone with a small lattice is enumerated, so
-asking for more points than it has returns `SampleError::Exhausted` with every one of
-them. `repair` moves a level exactly when that lands nearer. The oracle is exact on
-levels, so if you map points into a space of your own and back, as normalising into
-`-1..1` does, `ConstraintSystem::snap` puts each discrete coordinate back on its level
-before you judge it: the round trip moves 15 of the 101 hundredths of `0..=1` by an ulp.
-
-### Scales to engineering problems
-
-Vanderplaats' stepped cantilever has a width and a height for each of a hundred
-segments: 200 variables and 201 constraints, the last of which couples all of them.
-
-```rust,no_run
-use faer::Mat;
-use sojourn::rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
-use sojourn::{ConstraintSystem, InputVariable};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let n = 100;
-    let segment = 500.0 / n as f64;
-    let mut variables: Vec<InputVariable> =
-        (1..=n).map(|i| InputVariable::new_continuous(format!("b{i}"), 1.0, 5.0)).collect();
-    variables.extend((1..=n).map(|i| InputVariable::new_continuous(format!("h{i}"), 5.0, 100.0)));
-
-    let mut constraints = Vec::new();
-    for i in 1..=n {
-        let moment = 50_000.0 * (500.0 - (i - 1) as f64 * segment);
-        constraints.push(format!("6 * {moment} / (b{i} * h{i}^2) < 14000")); // bending stress
-        constraints.push(format!("h{i} < 20 * b{i}")); // aspect ratio
-    }
-    // Tip deflection: every segment's bending, summed. `var[i]` is b_i, `var[n + i]` is h_i.
-    let limit = 2.54 * 2.0e7 / (50_000.0 * segment.powi(3));
-    constraints.push(format!(
-        "sum(1, {n}, i -> (12 * ({n} - i + 0.5)^2 + 1) / (var[i] * var[{n} + i]^3)) < {limit}"
-    ));
-
-    let system = ConstraintSystem::new(variables, constraints)?;
-    let mut rng = Xoshiro256PlusPlus::seed_from_u64(2026);
-    let region = sojourn::solve(&system, &mut rng)?; // about 2 s
-    let design = region.sample(Mat::zeros(0, 0).as_ref(), 10, &mut rng)?; // about 3 s more
-    assert_eq!((design.nrows(), design.ncols()), (200, 10));
-    Ok(())
-}
-```
-
-Timings are from a release build on a laptop, and much of the solve is the walker's
-burn-in. That cost is paid once, and every design afterwards skips it. `sum` and `prod`
-are big-sigma over constant bounds, unrolled at compile time.
+discrete one takes its levels and nothing between them. When the constraints could be
+met between levels, the verdict is `Infeasibility::BetweenLevels` with a continuous
+witness: the formula is fine, and the levels are what needs to change. If you map
+points into a space of your own and back, `ConstraintSystem::snap` puts each discrete
+coordinate back on its level before you judge it.
 
 ### Evaluates in batches, with gradients
-
-The constraint engine runs on an evaluator you can use on its own:
 
 ```rust
 use faer::Mat;
@@ -228,12 +230,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The expression is lowered to a three-address tape and run in explicit SIMD, with the
-instruction set picked at run time. `x1 + x2 > 20 - x3^2` evaluates at about 175
-million points a second on one thread in batches of 256
-([`performance-records/`](performance-records)). A boolean evaluates to a residual
-whose sign is its truth value: `<= 0` is true. A violated constraint therefore also
-tells you how badly it is violated.
+The expression is lowered to a three-address tape and run in explicit SIMD:
+`x1 + x2 > 20 - x3^2` evaluates at about 175 million points a second on one thread
+([`performance-records/`](performance-records)). A comparison evaluates to a residual,
+`<= 0` meaning true, so a violated constraint also says by how much.
 
 ### Points at your mistakes
 
@@ -258,9 +258,8 @@ fn main() {
 }
 ```
 
-Nothing non-finite travels. NaN and infinity are compile errors where they can be
-proved, and run-time errors otherwise, located at the innermost subexpression that
-produced them.
+NaN and infinity never travel: they are a compile error where that can be proved, and a
+run-time error otherwise, pointing at the innermost subexpression that produced them.
 
 ### Compiles a document of named expressions
 
@@ -285,12 +284,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`fits` names only an output, but it is *cheap*: it can be decided from the inputs
-alone, so a design that fails it can be rejected before the drag simulation runs.
-Cycles, duplicates, unbound names and a constraint read as a number are all reported
-in one pass, each under the name it belongs to. Sojourn hands back the edges and no
-scheduler. [`tests/dependency_diagram.rs`](tests/dependency_diagram.rs) shows the
-caller's side.
+`fits` names only an output, but it is *cheap*: it can be decided from the inputs alone,
+so a design that fails it is rejected before the drag simulation runs. Sojourn returns
+the dependency edges and leaves the scheduling to you;
+[`tests/dependency_diagram.rs`](tests/dependency_diagram.rs) shows the caller's side.
 
 ## The language
 
@@ -310,39 +307,22 @@ caller's side.
 `solve` climbs a ladder, and each rung spends only on what the rungs before it left
 undecided:
 
-1. **Contract.** HC4 interval propagation shrinks the box under every constraint. A
+1. **Contract.** Interval propagation shrinks the box under every constraint. A
    coordinate that empties is a proof, with the constraints that emptied it as the blame.
-2. **Probe.** A batch of uniform samples, which takes tens of microseconds. When enough
-   of them land, that is the answer.
-3. **Local solve.** COBYLA (pure Rust, via [`basin`](https://crates.io/crates/basin))
-   from the box centre and a few seeded starts, stopping at the first feasible point.
-4. **Bisect.** Split the contracted box and prune the halves. Each dead box is a proof
-   that contraction alone missed. The boxes that survive are the separate pieces of
-   the region, and each one seeds a chain.
-5. **Brute force.** The uniform sampler on every core, for a billion proposals by
-   default, or on the GPU behind the opt-in `gpu` feature. The GPU only screens
-   candidates: every survivor is re-judged exactly on the CPU.
+2. **Probe.** One batch of uniform samples, tens of microseconds. If enough land, done.
+3. **Local solve.** COBYLA from the box centre and a few seeded starts, stopping at the
+   first feasible point.
+4. **Bisect.** Split the box and prune the halves. Each dead box is a proof contraction
+   alone missed, and each surviving box seeds a chain of the walker that draws designs.
+5. **Brute force.** Uniform sampling on every core, a billion proposals by default, or
+   on the GPU behind the opt-in `gpu` feature. The GPU only screens candidates; every
+   survivor is re-judged exactly on the CPU.
 
-Every rung is bounded by a count (contractions, evaluations, proposals) and never by a
-clock. So a run that does not return is a bug, and the same seed gives the same answer
-on every machine whatever the thread count. Designs come from a hit-and-run walker
-whose chains are burnt in at `solve`. Each one is a farthest-first selection, in
-box-normalised Euclidean distance, from the region's points, a round of uniform
-proposals and the walk. Every stage reports through
-[`tracing`](https://crates.io/crates/tracing) at `debug`. A run that seems stuck is
-located by its last log line.
-
-### Why there is no Z3
-
-Sojourn used to ask Z3 for a seed point and for proofs of infeasibility. Z3 was dropped
-in September 2026 because it was too slow. Its stage alone cost 85 s on the ten-segment
-beam in a debug build, where bisection now costs 13 s. It also spun on some queries
-without being reliably interruptible, it cannot compute `ln 10`, and it needed a C++
-build. Interval branch-and-prune replaced it. It is pure Rust, bounded by a count, and
-it names the constraints in its proof. Two classes of contradiction are beyond it and
-come back as `NotFound`: a *thin* one (`x + y <= 1` against `x + y >= 1 + 1e-9`) and an
-*algebraic* one (`x*x - 2*x*y + y*y < 0`). [`docs/todo.md`](docs/todo.md) has the
-measurements, under "The solver question, settled" and "Z3's fate".
+Every rung is bounded by a count, never a clock, so the same seed gives the same answer
+on any machine at any thread count, and a run that does not return is a bug. On
+Vanderplaats' stepped cantilever, 200 variables and 201 constraints, `solve` takes
+about 2 s in release and a ten-point design about 3 s more. Every stage logs through
+[`tracing`](https://crates.io/crates/tracing) at `debug`.
 
 ## Building
 
@@ -356,8 +336,7 @@ just lint           rustfmt drift and clippy, warnings denied
 just bench          release-mode throughput, written to performance-records/
 ```
 
-The lexer and parser are generated from [`grammar/`](grammar) by `build.rs` at build
-time. The GPU sieve is behind the `gpu` feature and is off by default.
+`build.rs` generates the lexer and parser from [`grammar/`](grammar).
 
 ## Reading further
 

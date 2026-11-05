@@ -444,6 +444,22 @@ pub(crate) fn nearest(
 ) -> Projected {
     let _span = tracing::debug_span!("cobyla").entered();
     let dimensions = problem.variables.len();
+    // The seed's gate, for the same reason: past it a projection is minutes
+    // of model algebra a step whatever its evaluation budget says. Nothing
+    // found is an answer `repair` already handles; its other landings stand.
+    let rows = problem.constraints.len() + 2 * dimensions;
+    if !within_model_algebra(rows, dimensions) {
+        tracing::debug!(
+            rows,
+            dimensions,
+            limit = MODEL_ALGEBRA_LIMIT,
+            "too large to project by a local solve"
+        );
+        return Projected {
+            clear: None,
+            feasible: None,
+        };
+    }
     let cube = Cube::over(&problem.declared());
     let projection = Projection {
         problem,
@@ -637,6 +653,41 @@ mod tests {
 
         // assert
         assert!(!within);
+    }
+
+    /// A thousand variables and one bound: the box's two thousand rows alone
+    /// put COBYLA past the limit (`2e9`), and the system costs nothing to
+    /// build — so the gates are exercised without paying for what they skip.
+    fn past_the_limit() -> ConstraintSystem {
+        let variables = (1..=1000)
+            .map(|i| InputVariable::new_continuous(format!("x{i}"), 0.0, 1.0))
+            .collect();
+        system(variables, &["x1 < 0.5"])
+    }
+
+    #[test]
+    fn when_past_the_model_algebra_limit_should_not_seed() {
+        // setup
+        let system = past_the_limit();
+
+        // act
+        let seed = find_initial(&system, &system.declared(), STARTS, &mut rng());
+
+        // assert
+        assert!(seed.is_none(), "{seed:?}");
+    }
+
+    #[test]
+    fn when_past_the_model_algebra_limit_should_project_to_nothing() {
+        // setup
+        let system = past_the_limit();
+        let point = vec![0.75; 1000];
+
+        // act
+        let projected = nearest(&system, &point, &point, 0.0);
+
+        // assert
+        assert!(projected.clear.is_none() && projected.feasible.is_none());
     }
 
     #[test]

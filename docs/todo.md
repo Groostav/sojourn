@@ -270,8 +270,8 @@ thing to read, and is the first work item rather than an admission.
          `local::MODEL_ALGEBRA_LIMIT`: no local solve once rows × d² passes `5e7`,
          about twice the 100-segment beam. The fix is a local solve whose cost per step
          follows the Jacobian's sparsity, which `newton.rs` already has for repair.
-         `local::nearest` (repair's COBYLA projection) has the same exposure and no
-         gate yet.
+         `local::nearest` (repair's COBYLA projection) has the same exposure and the
+         same gate. Past the gate it finds nothing, and repair's other landings stand.
       2. **With the gate, the mutants are `NotFound`.** Contraction and 256 bisections
          take 2.7 s, the 127 leaves give no seed, and ten million brute-force proposals
          take 165 s and land nothing (`scale-mutants-10k.csv`). That's honest, since a
@@ -288,6 +288,42 @@ thing to read, and is the first work item rather than an admission.
          as noise at 200 constraints) would be worth about a hundredfold here. Bring it
          back behind a measurement at both scales.
       The unplanted 200 over 50 is proved in 0.1 ms (eleven constraints blamed).
+
+- [ ] **Seed by the gradient; COBYLA is the fallback, not the rung.** *2026-11-04.*
+      Why the seed is COBYLA at all is history, not a decision: `local::find_initial`
+      landed on 2026-09-13, derivative-free because there were no gradients and
+      `basin`'s nonlinear-constraint solvers are all derivative-free; the tape's
+      reverse sweep and `newton.rs` landed two days later for repair, which has run
+      Newton first and COBYLA as a fallback ever since. The seed was never revisited.
+      The gate (`local::MODEL_ALGEBRA_LIMIT`) is sufficient for now: a system past it
+      ends early, in a shrug or the brute-force budget, and that beats a hang every
+      time. The plan, each step behind a measurement on `just scale` and the suite:
+      1. **Newton from the box centre.** Seeding is a projection of the centre onto
+         the region, which is `newton::nearest`'s question. Its working set is the
+         rows the start violates and its solve is `|A| × |A|` (`J Jᵀ`), cheap while
+         `|A|` is a few. Expected to seed the beam and most fixtures as it stands.
+      2. **Levenberg–Marquardt over the violations** where `|A|` outgrows the dimension
+         (`J Jᵀ` is then singular by rank) or Newton declines: `(JᵀJ + μI) δ = −Jᵀg` is
+         `n × n` however many rows are violated, `J` from the reverse sweeps of the
+         violated rows only, so an iteration costs the Jacobian's nonzeros plus `n³`
+         rather than `m·n²`, and an iteration count is an honest budget again. Newton
+         finishes the projection from where it lands, if nearness matters.
+      3. **COBYLA last**, where a biting constraint has no gradient (`floor`, `ceil`,
+         `sgn`, `%`, a computed subscript), and only under the gate.
+      Independently, and exact: **split the incidence graph into components** first.
+      The region is the product of the components' regions, each solved and walked at
+      its own size. It rescues neither benchmark, since both are one component, but a
+      generated formulation (per element, per unit) often is not.
+
+      **The same work refactors the gradient's output.** Today the derivative is a
+      tape of its own, and `CompiledGradient::eval` reads each partial out of a
+      register named in `tape.partials` after the run. The primal value rides in the
+      same tape and is not returned beside them. It was shaped that way to keep the
+      gradient off the GPU path, and it does not need to be: the sieve never wants a
+      gradient. An evaluation should return its value and an optional gradient as one
+      typed result, `None` where the tape declines, with the register plumbing behind
+      it, and stay CPU-only. A solver built on gradients is its first real consumer,
+      which is when to settle the signature.
 
 - [ ] **Sampling quality: a baseline, then a pool to choose from.** *2026-10-21.* The
       plan is `docs/sampling-quality.md`; step 1 (`sojourn::quality`, the closed-form

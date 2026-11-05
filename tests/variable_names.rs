@@ -33,6 +33,15 @@ fn unicode_names_are_legal() {
     }
 }
 
+/// `implies` is a keyword since 0.5.0, reserved the way `max` and `e` are;
+/// a name that merely starts with it is still a name.
+#[test]
+fn when_the_name_is_the_implies_keyword_should_be_illegal() {
+    assert_illegal("implies");
+    assert_legal("impliesX");
+    assert_legal("x_implies");
+}
+
 #[test]
 fn bare_number_is_illegal() {
     assert_illegal("3");

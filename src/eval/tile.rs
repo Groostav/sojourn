@@ -266,6 +266,9 @@ macro_rules! dispatch_combine {
             Accumulate::Worst => simd::in_place($simd, $d, $b, simd::max_nan, |x, y| {
                 Accumulate::Worst.apply(x, y)
             }),
+            Accumulate::Best => simd::in_place($simd, $d, $b, simd::min_nan, |x, y| {
+                Accumulate::Best.apply(x, y)
+            }),
         }
     };
     ($simd:expr, $how:expr, three_address: $d:expr, $a:expr, $b:expr) => {
@@ -288,6 +291,9 @@ macro_rules! dispatch_combine {
             ),
             Accumulate::Worst => simd::binary($simd, $d, $a, $b, simd::max_nan, |x, y| {
                 Accumulate::Worst.apply(x, y)
+            }),
+            Accumulate::Best => simd::binary($simd, $d, $a, $b, simd::min_nan, |x, y| {
+                Accumulate::Best.apply(x, y)
             }),
         }
     };

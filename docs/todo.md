@@ -289,6 +289,30 @@ thing to read, and is the first work item rather than an admission.
          back behind a measurement at both scales.
       The unplanted 200 over 50 is proved in 0.1 ms (eleven constraints blamed).
 
+- [ ] **`implies`: what was left for later.** *2026-11-04.* `p implies q` shipped in
+      0.5.0. It is `min(not p, q)`, an `Accumulate::Best` fold, with the premise negated
+      by complementing comparisons (AGENTS.md says why `-r` would be wrong). Three
+      decisions were deferred, each until a user or a fixture asks:
+      1. **A faulting conclusion under a false premise should be vacuous.**
+         `x > 0 implies x * ln(x) < 1` fails at `x = -1`, because the tape is eager and
+         a fault ends the row (`tests/runtime_errors.rs` pins it). Guarding a domain is
+         what an "if" is most often for, so this one will be asked for. The shape of
+         the fix: a guarded region in the tape, where a fault inside the conclusion is
+         `+inf` for that subtree, so `min(not p, +inf)` picks the premise. The lane and
+         tile executors, the WGSL emitter (which already guards every domain with a
+         comparison), `hc4`'s forward pass and the gradient each learn that rule. A
+         fault in the *premise* stays a failure.
+      2. **A conditional equality is `Opaque`.** `p implies y == f(x) +/- t` is never
+         driven, so the walker meets a thin conditional band by rejection alone. The
+         model is `x1 * x2 == 0`'s plan per arm, chosen per point by
+         `classify::tightest`: one plan driving `y` where `p` holds, one free plan where
+         it fails.
+      3. **No other connective.** `and` is a list of constraints, and `or` is
+         `not a implies b`, which is awkward but expressible. A user story that writes
+         `or` often is the reason to add it, and it would bind tighter than `implies`.
+         The grammar refuses a bare chain of implications (`ChainedImplication`), so
+         admitting it later, right-associative, breaks nothing.
+
 - [ ] **Seed by the gradient; COBYLA is the fallback, not the rung.** *2026-11-04.*
       Why the seed is COBYLA at all is history, not a decision: `local::find_initial`
       landed on 2026-09-13, derivative-free because there were no gradients and

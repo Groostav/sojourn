@@ -90,6 +90,32 @@ fn a_logarithm_of_zero_is_refused() {
     }
 }
 
+/// A fault in the conclusion fails the implication **even where the premise
+/// is false**, which is not what the logic says: `x > 0 implies x * ln(x) < 1`
+/// should hold vacuously at `x = -1`. (Not `ln(x) < 1`, which
+/// `rewrite::invert_monotone` turns into a bound on `x` with no logarithm
+/// left to fault.) The tape evaluates every instruction
+/// and a fault ends the row, so the guard a reader sees is not one the
+/// evaluator honours; guard the domain in the conclusion itself. Pinned so the
+/// day it changes is a deliberate one: `docs/todo.md`, "A faulting conclusion
+/// under a false premise".
+#[test]
+fn when_a_conclusion_faults_under_a_false_premise_should_still_be_refused() {
+    // act
+    let err = common::eval_one("x1 > 0 implies x1 * ln(x1) < 1", &[("x1", -1.0)])
+        .expect_err("faults are eager, premise or not");
+
+    // assert
+    match err {
+        EvaluationFailure::Runtime(p) => assert!(
+            matches!(p.problem.kind, ProblemKind::NonFiniteValue { value } if value.is_nan()),
+            "{:?}",
+            p.problem.kind
+        ),
+        other => panic!("expected a runtime problem, got {other:?}"),
+    }
+}
+
 /// Overflow is a non-finite value like any other, and the case most likely to
 /// be a nuisance rather than a service. Pinned so that if it ever needs
 /// relaxing, a failing test says where the policy lives.

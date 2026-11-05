@@ -184,6 +184,17 @@ pub enum ProblemKind {
     /// problem and cannot be caught here, because it depends on the values.
     DegenerateTolerance { tolerance: f64 },
 
+    /// `a implies b implies c`, with neither implication bracketed. Located
+    /// at the second `implies`.
+    ///
+    /// Refused because every reading of it is someone's surprise: logic
+    /// associates it to the right, `a implies (b implies c)`, which is `(a
+    /// and b) implies c`; ANTLR's default would be the left, `(a implies b)
+    /// implies c`, which is `(a and not b) or c` and which nobody means; and
+    /// a reader of `a < b < c` expects a transitive chain, a third meaning.
+    /// Brackets on either side say which, and both readings compile.
+    ChainedImplication,
+
     /// A subexpression evaluated to NaN or an infinity for this row.
     ///
     /// The same rule as [`ProblemKind::NonFiniteConstant`], for the values that
@@ -274,6 +285,7 @@ impl ProblemKind {
                         .to_owned()
                 }
             }
+            Self::ChainedImplication => "chained `implies` is ambiguous".to_owned(),
             Self::NonFiniteValue { value } => {
                 let what = if value.is_nan() {
                     "not a number"
@@ -318,6 +330,10 @@ impl ProblemKind {
             Self::Syntax { message, .. } => message.clone(),
             Self::Unbound { .. } => "no input variable by that name".to_owned(),
             Self::SubscriptNotIntegral => "wrap it in floor() or ceil() to say which".to_owned(),
+            Self::ChainedImplication => {
+                "bracket one side: `a implies (b implies c)` or `(a implies b) implies c`"
+                    .to_owned()
+            }
             Self::IllegalAggregateBound { value, .. }
             | Self::DynamicIndexNotAnInteger { value }
             | Self::NonFiniteConstant { value }

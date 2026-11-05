@@ -112,5 +112,6 @@
 {%- when Accumulate::Sum %}{{ a }} + {{ b }}
 {%- when Accumulate::Prod %}{{ a }} * {{ b }}
 {%- when Accumulate::Worst %}max({{ a }}, {{ b }})
+{%- when Accumulate::Best %}min({{ a }}, {{ b }})
 {%- endmatch -%}
 {%- endmacro -%}

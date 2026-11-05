@@ -150,6 +150,21 @@ dependency claim no pair of inequalities makes, and the thing driving is built
 on. Recovering it would mean re-pairing two `Compare` nodes by structure, which
 `fold_constants` or `invert_monotone` can disturb on one side and not the other.
 
+`p implies q` crosses the same seam. The front end keeps `Kind::Implies`, and
+`eval::irgen` lowers it to `min(not p, q)`, an `Accumulate::Best` fold, the
+disjunction beside `Worst`'s conjunction. **`not p` complements comparisons and
+never negates a residual**: `<` against `>=`, `<=` against `>`, De Morgan through
+a band, an `And` or a bracketed implication (`irgen::negated`). `-r` is wrong at
+a tie, since the strict `ε` lands on the wrong side, and it breaks the rule
+that a residual only ever enters a constraint increasingly. `cvg::hc4` leaves
+the `ε` out of its forward intervals, and the WGSL emitter subtracts a slack
+from every comparison. Both loosen a residual, and both would *tighten* a negated
+one, which drops feasible points silently. `hc4` gives `Best` its own backward
+rule: where one side is certainly above the target, the other must carry it, so a
+premise true over the box narrows the conclusion. `Min` as arithmetic still has
+no inverse. Faults stay eager: a conclusion that faults under a false premise
+fails the constraint (`tests/runtime_errors.rs`; `docs/todo.md` has the fix).
+
 **SIMD is explicit.** The tile executor's kernels live in `eval/simd.rs`, built
 on `pulp` with the instruction set picked at run time. Every operator is either
 a named vector kernel or a named `*_scalar` one; do not rely on auto-vectorisation

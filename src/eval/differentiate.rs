@@ -235,6 +235,7 @@ impl Sweep {
                     vec![(a, to_a), (b, to_b)]
                 }
                 Accumulate::Worst => self.through_extremum(a, b, true, d),
+                Accumulate::Best => self.through_extremum(a, b, false, d),
             },
         }
     }

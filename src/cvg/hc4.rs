@@ -328,6 +328,25 @@ impl IntervalTape {
                         need[a as usize] = need[a as usize].intersect(cap);
                         need[b as usize] = need[b as usize].intersect(cap);
                     }
+                    // The disjunction, `Worst`'s dual: every residual is at
+                    // least the best's bottom, and the best reaches the top
+                    // only through a residual that can. Where one side is
+                    // certainly above the top, the other has to carry it: a
+                    // premise true over the whole box narrows the
+                    // conclusion. Where neither is, nothing is said about
+                    // either, since either might be the one that holds.
+                    Accumulate::Best => {
+                        let floor = Interval::new(target.lo(), f64::INFINITY);
+                        need[a as usize] = need[a as usize].intersect(floor);
+                        need[b as usize] = need[b as usize].intersect(floor);
+                        let cap = Interval::new(f64::NEG_INFINITY, target.hi());
+                        if forward[a as usize].lo() > target.hi() {
+                            need[b as usize] = need[b as usize].intersect(cap);
+                        }
+                        if forward[b as usize].lo() > target.hi() {
+                            need[a as usize] = need[a as usize].intersect(cap);
+                        }
+                    }
                 },
                 Instruction::Gather { .. } | Instruction::Check { .. } => {}
             }
@@ -386,14 +405,14 @@ impl IntervalTape {
                     binary_term(interned, how_op(how), keys[a as usize], keys[b as usize]),
                     true,
                 ),
-                // A residual and a conjunction of residuals are one
-                // constraint's verdict, not a value another computes; a
+                // A residual and a conjunction or disjunction of residuals are
+                // one constraint's verdict, not a value another computes; a
                 // gather reads a column the point picks, so it has no
                 // structure to match.
                 Instruction::Compare { dst, .. }
                 | Instruction::Combine {
                     dst,
-                    how: Accumulate::Worst,
+                    how: Accumulate::Worst | Accumulate::Best,
                     ..
                 }
                 | Instruction::Gather { dst, .. } => (dst, None, false),
@@ -422,6 +441,7 @@ const fn how_op(how: Accumulate) -> BinaryOp {
         Accumulate::Sum => BinaryOp::Add,
         Accumulate::Prod => BinaryOp::Mul,
         Accumulate::Worst => BinaryOp::Max,
+        Accumulate::Best => BinaryOp::Min,
     }
 }
 
@@ -690,6 +710,42 @@ mod tests {
             (got.lo() - 1.5).abs() < 1e-12 && (got.hi() - 2.5).abs() < 1e-12,
             "{got:?}"
         );
+    }
+
+    /// The disjunction's rule: where the premise holds over the whole box,
+    /// its negation is certainly above zero, so the conclusion has to carry
+    /// the implication and narrows like a constraint of its own.
+    #[test]
+    fn when_a_premise_holds_over_the_box_should_narrow_the_conclusion() {
+        // setup
+        let (narrower, ast) = narrower("x > 2 implies y < 1");
+        let mut frames = Frames::default();
+        let x_above_the_premise = [Interval::new(3.0, 10.0), Interval::new(0.0, 10.0)];
+
+        // act
+        let got = narrower.narrow(&x_above_the_premise, symbol(&ast, "y"), &mut frames);
+
+        // assert
+        assert!(
+            got.lo() == 0.0 && got.hi() >= 1.0 && got.hi() < 1.0 + 1e-9,
+            "{got:?}"
+        );
+    }
+
+    /// Where the premise may or may not hold, either arm may be the one that
+    /// does, and the conclusion says nothing about `y`.
+    #[test]
+    fn when_a_premise_may_fail_should_not_narrow_the_conclusion() {
+        // setup
+        let (narrower, ast) = narrower("x > 2 implies y < 1");
+        let mut frames = Frames::default();
+        let x_across_the_premise = [Interval::new(0.0, 10.0), Interval::new(0.0, 10.0)];
+
+        // act
+        let got = narrower.narrow(&x_across_the_premise, symbol(&ast, "y"), &mut frames);
+
+        // assert
+        assert!(got.lo() <= 0.0 && got.hi() >= 10.0, "{got:?}");
     }
 
     /// A requirement that misses everything a value can be is the constraint

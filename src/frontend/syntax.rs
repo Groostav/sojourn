@@ -26,8 +26,9 @@ use crate::ast::{
 use crate::diagnostics::{Problem, ProblemKind, Span};
 use crate::frontend::generated::lexer::BabelLexer;
 use crate::frontend::generated::parser::{
-    self, BabelParser, BooleanExprContext, LiteralContext, ScalarBlockContext,
-    ScalarEvaluableContext, ScalarExprContext, StatementBlockContext, StatementContext,
+    self, BabelParser, BooleanExprContext, BooleanPrimaryContext, LiteralContext,
+    ScalarBlockContext, ScalarEvaluableContext, ScalarExprContext, StatementBlockContext,
+    StatementContext,
 };
 
 /// Everything compilation learns from walking the parse tree: the tree as
@@ -426,13 +427,55 @@ impl SemanticTranslator<'_> {
         Ok(assignments)
     }
 
+    /// `booleanPrimary (IMPLIES booleanExpr)?`.
+    ///
+    /// The grammar's right recursion admits `a implies b implies c` as `a
+    /// implies (b implies c)`; it is refused here, at the second `implies`,
+    /// because a reader holds one of three meanings for it and only one is
+    /// this ([`ProblemKind::ChainedImplication`]). A bracketed implication on
+    /// either side is a `booleanPrimary` and passes.
+    fn translate_boolean_expr(
+        &self,
+        ctx: &BooleanExprContext<'_>,
+        state: &mut TranslationState,
+    ) -> Result<Expr, Vec<Problem>> {
+        let premise_ctx = ctx
+            .boolean_primary()
+            .expect("booleanExpr requires a booleanPrimary");
+        let premise = self.translate_boolean_primary(&premise_ctx, state)?;
+
+        let Some(conclusion_ctx) = ctx.boolean_expr() else {
+            return Ok(premise);
+        };
+        if let Some(chained) = conclusion_ctx.implies_token() {
+            let token = chained.symbol();
+            return Err(vec![Problem::new(
+                ProblemKind::ChainedImplication,
+                self.source,
+                Span::new(
+                    u32::try_from(token.start()).unwrap_or(u32::MAX),
+                    u32::try_from(token.stop().saturating_add(1)).unwrap_or(u32::MAX),
+                ),
+            )]);
+        }
+        let conclusion = self.translate_boolean_expr(&conclusion_ctx, state)?;
+
+        Ok(Expr::new(
+            Kind::Implies {
+                premise: Box::new(premise),
+                conclusion: Box::new(conclusion),
+            },
+            span_of(ctx),
+        ))
+    }
+
     // These survive compilation as `Kind::Compare` and `Kind::NearEq`. Each
     // backend lowers them itself: `eval` computes a residual whose sign carries
     // the truth value, `cvg::interval` reads the comparison as a target
     // interval. Neither convention belongs to the front end.
-    fn translate_boolean_expr(
+    fn translate_boolean_primary(
         &self,
-        ctx: &BooleanExprContext<'_>,
+        ctx: &BooleanPrimaryContext<'_>,
         state: &mut TranslationState,
     ) -> Result<Expr, Vec<Problem>> {
         let span = span_of(ctx);
@@ -489,7 +532,7 @@ impl SemanticTranslator<'_> {
         } else if ctx.gt().is_some() {
             CompareOp::Gt
         } else {
-            unreachable!("booleanExpr has no other alternative");
+            unreachable!("booleanPrimary has no other alternative");
         };
 
         Ok(Expr::new(Kind::Compare { op, lhs, rhs }, span))

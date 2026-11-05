@@ -43,7 +43,17 @@ assignment
     : var name '=' scalarExpr
     ;
 
+// `p implies q`, binding looser than any comparison, so neither side needs
+// brackets. Right recursion rather than a left-recursive rule with an
+// `<assoc>`: the grammar admits `a implies b implies c` as `a implies (b
+// implies c)`, and `syntax::translate_boolean_expr` refuses that bare chain
+// with a caret (`ProblemKind::ChainedImplication`), where a bracketed one
+// arrives through `booleanPrimary` and passes.
 booleanExpr
+    : booleanPrimary (IMPLIES booleanExpr)?
+    ;
+
+booleanPrimary
 //    locals [ @Nonnull Availability availability = Availability.Runtime ]
 // TODO: eagerly evaluated booleans probably arent too useful without universal/existential operators
     : scalarExpr (lt | lteq | gt | gteq) scalarExpr

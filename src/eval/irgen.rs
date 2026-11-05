@@ -177,30 +177,7 @@ impl Emitter<'_> {
                 rhs,
                 tolerance,
             } => {
-                let a = self.expr(lhs, None);
-                let b = self.expr(rhs, None);
-                let tolerance = self.constant(*tolerance);
-
-                let floor = self.temp();
-                self.emit(
-                    Instruction::Binary {
-                        dst: floor,
-                        op: BinaryOp::Sub,
-                        a: b,
-                        b: tolerance,
-                    },
-                    span,
-                );
-                let ceiling = self.temp();
-                self.emit(
-                    Instruction::Binary {
-                        dst: ceiling,
-                        op: BinaryOp::Add,
-                        a: b,
-                        b: tolerance,
-                    },
-                    span,
-                );
+                let (a, floor, ceiling) = self.band(lhs, rhs, *tolerance, span);
 
                 let at_least = self.temp();
                 self.emit(
@@ -240,10 +217,182 @@ impl Emitter<'_> {
                 self.fold(Accumulate::from_aggregate(*kind), terms, dst, span)
             }
             Kind::And { terms } => self.fold(Accumulate::Worst, terms, dst, span),
+            // `min(not premise, conclusion)`: true where the premise fails or
+            // the conclusion holds. The premise is negated by `negated`, which
+            // complements comparisons rather than negating a residual.
+            Kind::Implies {
+                premise,
+                conclusion,
+            } => {
+                let unless = self.negated(premise);
+                let then = self.expr(conclusion, None);
+                let dst = dst.unwrap_or_else(|| self.temp());
+                self.emit(
+                    Instruction::Combine {
+                        dst,
+                        how: Accumulate::Best,
+                        a: unless,
+                        b: then,
+                        last: true,
+                    },
+                    span,
+                );
+                dst
+            }
             Kind::Block(block) => self.block(block, dst),
             Kind::Aggregate { .. } => {
                 unreachable!("`unroll_aggregates` turns every aggregate into a `Fold` or fails")
             }
+        }
+    }
+
+    /// `a == b +/- t`'s operands and bounds: `a`, then `b - t` and `b + t`,
+    /// computed once in that order. What `NearEq` compares `a` against, and
+    /// what its negation compares it against from the other side.
+    fn band(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        tolerance: f64,
+        span: Span,
+    ) -> (VirtualRegister, VirtualRegister, VirtualRegister) {
+        let a = self.expr(lhs, None);
+        let b = self.expr(rhs, None);
+        let tolerance = self.constant(tolerance);
+
+        let floor = self.temp();
+        self.emit(
+            Instruction::Binary {
+                dst: floor,
+                op: BinaryOp::Sub,
+                a: b,
+                b: tolerance,
+            },
+            span,
+        );
+        let ceiling = self.temp();
+        self.emit(
+            Instruction::Binary {
+                dst: ceiling,
+                op: BinaryOp::Add,
+                a: b,
+                b: tolerance,
+            },
+            span,
+        );
+        (a, floor, ceiling)
+    }
+
+    /// The residual of `not expr`, for a boolean `expr`: the premise of an
+    /// implication.
+    ///
+    /// **By complementing each comparison, never by negating a residual.**
+    /// `-r` is wrong at a tie: `x < y` is `x - y + ε`, and its negation `x >=
+    /// y` is `y - x`, where `-(x - y + ε)` is `y - x - ε`, true where it
+    /// should be false. And the rest of the crate assumes a residual enters
+    /// a constraint increasingly: `cvg::hc4` leaves the `ε` out of its
+    /// forward intervals and the GPU sieve subtracts a slack from every
+    /// comparison, both of which loosen a residual and would *tighten* a
+    /// negated one, dropping feasible points. Complemented comparisons and
+    /// De Morgan keep every residual under monotone folds, so both stay
+    /// supersets.
+    fn negated(&mut self, expr: &Expr) -> VirtualRegister {
+        let span = expr.span;
+        match &expr.kind {
+            Kind::Compare { op, lhs, rhs } => {
+                let a = self.expr(lhs, None);
+                let b = self.expr(rhs, None);
+                let dst = self.temp();
+                self.emit(
+                    Instruction::Compare {
+                        dst,
+                        op: complement(*op),
+                        a,
+                        b,
+                    },
+                    span,
+                );
+                dst
+            }
+            // Outside the band: `a < b - t` or `a > b + t`.
+            Kind::NearEq {
+                lhs,
+                rhs,
+                tolerance,
+            } => {
+                let (a, floor, ceiling) = self.band(lhs, rhs, *tolerance, span);
+                let below = self.temp();
+                self.emit(
+                    Instruction::Compare {
+                        dst: below,
+                        op: CompareOp::Lt,
+                        a,
+                        b: floor,
+                    },
+                    span,
+                );
+                let above = self.temp();
+                self.emit(
+                    Instruction::Compare {
+                        dst: above,
+                        op: CompareOp::Gt,
+                        a,
+                        b: ceiling,
+                    },
+                    span,
+                );
+                let dst = self.temp();
+                self.emit(
+                    Instruction::Combine {
+                        dst,
+                        how: Accumulate::Best,
+                        a: below,
+                        b: above,
+                        last: true,
+                    },
+                    span,
+                );
+                dst
+            }
+            // `invert_monotone`'s domain guard in a premise: some term fails.
+            Kind::And { terms } => self.chain(
+                Accumulate::Best,
+                terms.len(),
+                |this, k| this.negated(&terms[k]),
+                None,
+                span,
+            ),
+            // A bracketed implication as a premise: `p and not q`.
+            Kind::Implies {
+                premise,
+                conclusion,
+            } => {
+                let holds = self.expr(premise, None);
+                let fails = self.negated(conclusion);
+                let dst = self.temp();
+                self.emit(
+                    Instruction::Combine {
+                        dst,
+                        how: Accumulate::Worst,
+                        a: holds,
+                        b: fails,
+                        last: true,
+                    },
+                    span,
+                );
+                dst
+            }
+            Kind::Literal(_)
+            | Kind::Global(_)
+            | Kind::Local(_)
+            | Kind::DynamicIndex(_)
+            | Kind::Unary { .. }
+            | Kind::Binary { .. }
+            | Kind::Aggregate { .. }
+            | Kind::Fold { .. }
+            | Kind::Block(_) => unreachable!(
+                "a premise is a `booleanPrimary` by the grammar, and the rewrites keep a boolean boolean"
+            ),
         }
     }
 
@@ -310,6 +459,18 @@ impl Emitter<'_> {
             self.spans,
             result,
         )
+    }
+}
+
+/// The comparison that holds exactly where `op` does not: `<` against `>=`,
+/// `<=` against `>`. Strictness flips with the direction, which is what
+/// puts the `ε` nudge on the right side of a tie.
+const fn complement(op: CompareOp) -> CompareOp {
+    match op {
+        CompareOp::Lt => CompareOp::Gte,
+        CompareOp::Lte => CompareOp::Gt,
+        CompareOp::Gt => CompareOp::Lte,
+        CompareOp::Gte => CompareOp::Lt,
     }
 }
 
@@ -499,6 +660,49 @@ mod tests {
                 ]
             ),
             "{ops:?}"
+        );
+    }
+
+    /// `p implies q` is `Best(not p, q)`, and `not p` is the complemented
+    /// comparison, never a negated residual: `x1 > x2` becomes `x1 <= x2`.
+    #[test]
+    fn when_lowering_an_implication_should_complement_the_premise_under_a_disjunction() {
+        // act
+        let tape = tape_for("x1 > x2 implies x1 < 1", &["x1", "x2"]);
+
+        // assert
+        let ops: Vec<_> = tape
+            .insns
+            .iter()
+            .filter(|insn| !matches!(insn, Instruction::Load { .. }))
+            .collect();
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [
+                    Instruction::Compare {
+                        op: crate::ast::CompareOp::Lte,
+                        ..
+                    },
+                    Instruction::Compare {
+                        op: crate::ast::CompareOp::Lt,
+                        ..
+                    },
+                    Instruction::Combine {
+                        how: Accumulate::Best,
+                        last: true,
+                        ..
+                    },
+                ]
+            ),
+            "{ops:?}"
+        );
+        assert!(
+            !tape
+                .insns
+                .iter()
+                .any(|insn| matches!(insn, Instruction::Unary { .. })),
+            "nothing is negated"
         );
     }
 

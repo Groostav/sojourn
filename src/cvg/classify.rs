@@ -950,6 +950,22 @@ mod tests {
         assert_eq!(shape(&parse("x1 + x2 > 20 - x3^2")), Shape::Opaque);
     }
 
+    /// An equality under an implication holds only where the premise does,
+    /// so it determines its variable nowhere in particular: driving `y` from
+    /// it would compute `y` on points where nothing asks for it. `Opaque`
+    /// until a fixture wants a plan per arm, as `x1 * x2 == 0` has.
+    #[test]
+    fn when_an_equality_is_the_conclusion_of_an_implication_should_be_opaque() {
+        assert_eq!(
+            shape(&parse("x > 0 implies y == x + 1 +/- 0.1")),
+            Shape::Opaque
+        );
+        assert_eq!(
+            shape(&parse("y == x + 1 +/- 0.1 implies x > 0")),
+            Shape::Opaque
+        );
+    }
+
     /// A scalar expression is not a constraint and has no sides to read.
     #[test]
     fn a_scalar_expression_is_not_classified() {

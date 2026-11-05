@@ -87,6 +87,60 @@ fn nested_boolean_clause_is_rejected() {
     assert_syntax_at("1+(x > 3) + 2", Span::new(5, 6), 5, false);
 }
 
+/// `a implies b implies c` has three readings and a reader holds one of
+/// them; see [`ProblemKind::ChainedImplication`]. The caret is the second
+/// `implies`, the one that would need a bracket.
+#[test]
+fn a_bare_chain_of_implications_is_refused_at_the_second() {
+    // setup
+    let source = "x > 0 implies y > 0 implies z > 0";
+
+    // act
+    let failure =
+        sojourn::compile(source, &["x", "y", "z"]).expect_err("a bare chain should not compile");
+
+    // assert
+    assert!(
+        failure
+            .problems
+            .iter()
+            .any(|p| p.kind == ProblemKind::ChainedImplication && p.span == Span::new(20, 27)),
+        "{:#?}",
+        failure.problems
+    );
+}
+
+#[test]
+fn a_bracketed_chain_of_implications_compiles_either_way() {
+    for source in [
+        "x > 0 implies (y > 0 implies z > 0)",
+        "(x > 0 implies y > 0) implies z > 0",
+        "(x > 0) implies (y > 0)",
+    ] {
+        sojourn::compile(source, &["x", "y", "z"])
+            .unwrap_or_else(|e| panic!("{source:?} should compile: {e:#}"));
+    }
+}
+
+/// An implication is a boolean like any comparison, so it has the same
+/// places it cannot go: inside arithmetic and inside a lambda's body.
+#[test]
+fn an_implication_is_not_a_scalar() {
+    for (source, span, column) in [
+        ("1 + (x > 0 implies x < 1)", Span::new(7, 8), 7),
+        ("sum(1, 3, i -> i > 0 implies i < 2)", Span::new(17, 18), 17),
+    ] {
+        assert_reports(source, &format!("a syntax error at {span:?}"), |p| {
+            matches!(p.kind, ProblemKind::Syntax { .. }) && p.span == span && p.column_idx == column
+        });
+    }
+}
+
+#[test]
+fn an_implication_missing_its_conclusion_does_not_parse() {
+    assert_syntax_at("x > 0 implies", Span::new(13, 13), 13, false);
+}
+
 #[test]
 fn a_boolean_cannot_be_used_as_a_scalar() {
     // The grammar admits `booleanExpr` only at `returnStatement`, so there is

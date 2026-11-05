@@ -133,6 +133,13 @@ fn fold_expr(expr: Expr) -> Result<Expr, Vec<Fault>> {
                 .map(fold_expr)
                 .collect::<Result<_, Vec<Fault>>>()?,
         },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: fold_descend(*premise)?,
+            conclusion: fold_descend(*conclusion)?,
+        },
         // A literal subscript that no schema could satisfy — zero, negative,
         // or not a whole number — is refused here, where the aggregate bounds
         // are, rather than on the first row that reaches it. Which parameters
@@ -256,7 +263,11 @@ fn check_expr(expr: &Expr, env: &mut Vec<bool>, faults: &mut Vec<Fault>) {
         Kind::Unary { arg, .. } => check_expr(arg, env, faults),
         Kind::Binary { lhs, rhs, .. }
         | Kind::Compare { lhs, rhs, .. }
-        | Kind::NearEq { lhs, rhs, .. } => {
+        | Kind::NearEq { lhs, rhs, .. }
+        | Kind::Implies {
+            premise: lhs,
+            conclusion: rhs,
+        } => {
             check_expr(lhs, env, faults);
             check_expr(rhs, env, faults);
         }
@@ -439,6 +450,13 @@ fn resolve_expr(expr: Expr, schema: &Schema, symbols: &mut Vec<String>) -> Resul
                 .map(|term| resolve_expr(term, schema, symbols))
                 .collect::<Result<_, _>>()?,
         },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: Box::new(resolve_expr(*premise, schema, symbols)?),
+            conclusion: Box::new(resolve_expr(*conclusion, schema, symbols)?),
+        },
         Kind::Fold { kind, terms } => Kind::Fold {
             kind,
             terms: terms
@@ -544,6 +562,15 @@ fn invert_expr(node: Expr) -> Expr {
         },
         Kind::And { terms } => Kind::And {
             terms: terms.into_iter().map(invert_expr).collect(),
+        },
+        // Each side is a comparison, inverted like any other; a premise that
+        // becomes an `And` here is negated by De Morgan in `eval::irgen`.
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: Box::new(invert_expr(*premise)),
+            conclusion: Box::new(invert_expr(*conclusion)),
         },
         Kind::DynamicIndex(index) => Kind::DynamicIndex(Box::new(invert_expr(*index))),
         Kind::Aggregate {
@@ -945,6 +972,13 @@ fn unroll_expr(expr: Expr) -> Result<Expr, Vec<Fault>> {
                 .map(unroll_expr)
                 .collect::<Result<_, Vec<Fault>>>()?,
         },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: Box::new(unroll_expr(*premise)?),
+            conclusion: Box::new(unroll_expr(*conclusion)?),
+        },
     };
 
     Ok(Expr { kind, span })
@@ -1089,6 +1123,13 @@ fn substitute(expr: Expr, param: LocalSlot, index: i64) -> Result<Expr, Vec<Faul
                 .map(|term| substitute(term, param, index))
                 .collect::<Result<_, _>>()?,
         },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: Box::new(substitute(*premise, param, index)?),
+            conclusion: Box::new(substitute(*conclusion, param, index)?),
+        },
     };
 
     Ok(Expr { kind, span })
@@ -1230,6 +1271,13 @@ fn collect_expr(expr: Expr) -> Expr {
         },
         Kind::And { terms } => Kind::And {
             terms: terms.into_iter().map(collect_expr).collect(),
+        },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: descend(premise),
+            conclusion: descend(conclusion),
         },
         Kind::Aggregate {
             kind,
@@ -1448,6 +1496,13 @@ fn powers_expr(expr: Expr, frame_size: &mut u32) -> Expr {
                 .into_iter()
                 .map(|term| powers_expr(term, frame_size))
                 .collect(),
+        },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: descend(premise, frame_size),
+            conclusion: descend(conclusion, frame_size),
         },
         Kind::Aggregate {
             kind,

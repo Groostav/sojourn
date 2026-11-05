@@ -682,6 +682,61 @@ fn a_simple_inequality() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `x > 5 implies x < 2` cannot have its conclusion where its premise holds,
+/// so the only way to satisfy it is to make the premise false: the region is
+/// `x <= 5`, reached through the vacuous arm alone.
+#[test]
+fn when_an_implication_holds_only_vacuously_should_sample_where_its_premise_fails()
+-> anyhow::Result<()> {
+    // setup
+    let sources = &["x > 5 implies x < 2"];
+    let system = system(variables(&[("x", 0.0, 10.0)]), sources)?;
+
+    // act
+    let region = ConstraintSolver::new()
+        .with_proposal_budget(common::PROPOSAL_BUDGET)
+        .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED))?;
+    let points = columns(&region.sample(
+        Mat::zeros(0, 0).as_ref(),
+        REQUESTED,
+        &mut Xoshiro256PlusPlus::seed_from_u64(SEED),
+    )?);
+
+    // assert
+    assert_ten_feasible(&system, sources, &points);
+    for point in &points {
+        assert!(point[0] <= 5.0, "{point:?} is past the premise");
+    }
+    Ok(())
+}
+
+/// With `x > 3`, `x > 2 implies x < 1` has a true premise everywhere left and
+/// a conclusion that cannot hold: the contraction proves it, through the
+/// disjunction rule that narrows the conclusion once the premise is certain.
+#[test]
+fn when_an_implications_premise_is_forced_and_its_conclusion_impossible_should_prove_it()
+-> anyhow::Result<()> {
+    // setup
+    let system = system(
+        variables(&[("x", 0.0, 10.0)]),
+        &["x > 2 implies x < 1", "x > 3"],
+    )?;
+
+    // act
+    let solution = ConstraintSolver::new()
+        .with_proposal_budget(common::PROPOSAL_BUDGET)
+        .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED));
+
+    // assert
+    let Err(Infeasibility::Proved { blamed }) = solution else {
+        panic!("expected a proof, got {solution:?}");
+    };
+    let mut sources: Vec<&str> = blamed.iter().map(|c| c.source.as_str()).collect();
+    sources.sort_unstable();
+    assert_eq!(sources, vec!["x > 2 implies x < 1", "x > 3"]);
+    Ok(())
+}
+
 #[test]
 fn logarithms() -> anyhow::Result<()> {
     // `2 < ln(x1)` is `x1 > e^2`, about 26% of the range. The JVM case has two

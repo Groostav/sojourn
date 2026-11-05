@@ -239,6 +239,99 @@ case!(lt_large_gap: Case::new("1.0e200 < 1.0e199", 9.0e199).boolean());
 case!(lteq_equal_large: Case::new("1.0e200 <= 1.0e200", 0.0).boolean());
 case!(gteq_equal_large: Case::new("1.0e200 >= 1.0e200", 0.0).boolean());
 
+// ------------------------------------------------------------- implication
+//
+// `p implies q` is `min(not p, q)`: true where the premise is false or the
+// conclusion true. `not p` is the *complemented* comparison, not `-p`, so the
+// strict nudge lands on the right side of a tie: `not (x > y)` is `x <= y`,
+// `x - y`; `not (x >= y)` is `x < y`, `x - y + EPSILON`.
+
+case!(implies_premise_and_conclusion_true:
+    // min(3 - 2, 3 * 2 - 20 + EPSILON)
+    Case::new("x > y implies x * y < 20", -14.0)
+        .vars([("x", 3.0), ("y", 2.0)])
+        .boolean());
+
+case!(implies_premise_true_conclusion_false:
+    // min(6 - 4, 6 * 4 - 20 + EPSILON): false, by the premise's margin
+    Case::new("x > y implies x * y < 20", 2.0)
+        .vars([("x", 6.0), ("y", 4.0)])
+        .boolean());
+
+case!(implies_premise_false_is_vacuous:
+    // min(1 - 2, 1 - 0 + EPSILON): the conclusion is false and it holds
+    Case::new("x > y implies x < 0", -1.0)
+        .vars([("x", 1.0), ("y", 2.0)])
+        .boolean());
+
+case!(implies_strict_premise_at_a_tie_is_false:
+    // x > y is false at x == y, so the implication holds: min(1 - 1, 1 + EPSILON)
+    Case::new("x > y implies x < 0", 0.0)
+        .vars([("x", 1.0), ("y", 1.0)])
+        .boolean());
+
+case!(implies_non_strict_premise_at_a_tie_is_true:
+    // x >= y is true at x == y, and the conclusion is false: min(EPSILON, 1 + EPSILON)
+    Case::new("x >= y implies x < 0", EPSILON)
+        .vars([("x", 1.0), ("y", 1.0)])
+        .boolean());
+
+case!(implies_band_premise_inside:
+    // not (x == y +/- 0.5) is x < y - 0.5 or x > y + 0.5:
+    // min(1 - 0.75 + EPSILON, 1.75 - 1 + EPSILON) = 0.25; the conclusion is 1 + EPSILON
+    Case::new("x == y +/- 0.5 implies x < 0", 0.25)
+        .vars([("x", 1.0), ("y", 1.25)])
+        .boolean());
+
+case!(implies_band_premise_outside:
+    // min(1 - 2.5 + EPSILON, 3.5 - 1 + EPSILON) = -1.5
+    Case::new("x == y +/- 0.5 implies x < 0", -1.5)
+        .vars([("x", 1.0), ("y", 3.0)])
+        .boolean());
+
+case!(implies_band_conclusion:
+    // min(1 - 0, max(0.75 - 1, 1 - 1.75))
+    Case::new("x > 0 implies x == y +/- 0.5", -0.25)
+        .vars([("x", 1.0), ("y", 1.25)])
+        .boolean());
+
+case!(implies_nested_in_the_conclusion:
+    // inner min(2 - 0, 1 - 2 + EPSILON) = -1; outer min(1 - 0, -1)
+    Case::new("x > 0 implies (y > 0 implies x < y)", -1.0)
+        .vars([("x", 1.0), ("y", 2.0)])
+        .boolean());
+
+case!(implies_nested_in_the_premise:
+    // not (p implies q) is p and not q: max(0 - 1 + EPSILON, -1 - 0) = -1;
+    // the conclusion is 1 - (-1) + EPSILON = 2; min(-1, 2)
+    Case::new("(x > 0 implies y > 0) implies x < y", -1.0)
+        .vars([("x", 1.0), ("y", -1.0)])
+        .boolean());
+
+case!(implies_binds_looser_than_comparison:
+    // min((3 + 1) - 2, 3 * 2 - 20 + EPSILON) — the arithmetic stays on its side
+    Case::new("x + 1 > y implies x * y < 20", -14.0)
+        .vars([("x", 3.0), ("y", 2.0)])
+        .boolean());
+
+/// A premise `rewrite::invert_monotone` turns into a conjunction (`ln(x) < 1`
+/// is `x < e` with the domain's floor `x >= 0`) is negated by De Morgan,
+/// either bound failing being enough. The residual's value is the rewrite's
+/// business, so this pins the verdict on either side of each bound rather
+/// than a number.
+#[test]
+fn implies_negates_an_inverted_premise_by_de_morgan() {
+    for (x, y, holds) in [
+        (1.0, 1.0, false), // premise true, conclusion false
+        (1.0, -1.0, true), // premise true, conclusion true
+        (9.0, 1.0, true),  // past the bound: premise false, vacuous
+        (-1.0, 1.0, true), // below the floor: premise false, and no ln to fault
+    ] {
+        let residual = common::eval_one("ln(x) < 1 implies y < 0", &[("x", x), ("y", y)]).unwrap();
+        assert_eq!(residual <= 0.0, holds, "x = {x}, y = {y}: {residual}");
+    }
+}
+
 // ------------------------------------------------------------------ nesting
 
 case!(nested_sum: Case::new("sum(3, 6, i -> sum(3, 3, j -> j + i))", 30.0));

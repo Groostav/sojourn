@@ -17,7 +17,7 @@ and returns:
 
 ```toml
 [dependencies]
-sojourn = "0.4"
+sojourn = "0.5"
 faer = "0.24"
 ```
 
@@ -298,6 +298,7 @@ the dependency edges and leaves the scheduling to you;
 |---|---|
 | arithmetic | `+` `-` `*` `/` `%` `^` |
 | comparisons | `<` `<=` `>` `>=`, and `a == b +/- 0.01`: equality always carries its tolerance |
+| implication | `x > y implies x * y < 20` holds wherever the premise fails or the conclusion holds. It binds looser than any comparison; nest it with brackets, `a implies (b implies c)`, since a bare chain is refused. A fault anywhere still fails the constraint, premise or not: guard the conclusion's own domain |
 | functions | `sin` `cos` `tan` `cot` `asin` `acos` `atan` `sinh` `cosh` `tanh` `ln` `log` (base 10) `log(b, x)` `sqrt` `cbrt` `sqr` `cube` `abs` `sgn` `floor` `ceil` `max` `min` |
 | constants | `pi`, `e` |
 | aggregates | `sum(1, 20, i -> var[i]^2)`, `prod(...)`: the bounds are constants |

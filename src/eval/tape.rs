@@ -206,6 +206,16 @@ pub(crate) enum Accumulate {
     /// Conjunction under the `<= 0` convention: the worst residual wins.
     /// typically NaN-propagating `max`, via `BinaryOp::Max`.
     Worst,
+    /// Disjunction, `Worst`'s dual: the best residual wins, via `BinaryOp::Min`.
+    /// What an implication lowers to, `min(not premise, conclusion)`.
+    ///
+    /// A fold of its own rather than a `Binary { op: Min }` for two reasons.
+    /// It is a boolean connective, and reads as one beside `Worst` in every
+    /// executor. And `cvg::hc4` gives it a backward rule of its own, the
+    /// disjunction's, where `Min` as arithmetic has no inverse
+    /// (`interval::invert_binary`) and must keep having none, since
+    /// `classify::reaches` declines `max`/`min` by that same table.
+    Best,
 }
 
 impl Accumulate {
@@ -214,6 +224,7 @@ impl Accumulate {
             Self::Sum => AggregateKind::Sum.combine(accumulated, term),
             Self::Prod => AggregateKind::Prod.combine(accumulated, term),
             Self::Worst => BinaryOp::Max.apply(accumulated, term),
+            Self::Best => BinaryOp::Min.apply(accumulated, term),
         }
     }
 
@@ -222,6 +233,7 @@ impl Accumulate {
             Self::Sum => AggregateKind::Sum.identity(),
             Self::Prod => AggregateKind::Prod.identity(),
             Self::Worst => f64::NEG_INFINITY,
+            Self::Best => f64::INFINITY,
         }
     }
 

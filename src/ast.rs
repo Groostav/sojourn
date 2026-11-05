@@ -107,6 +107,10 @@ impl Expr {
             Kind::Binary { lhs, rhs, .. }
             | Kind::Compare { lhs, rhs, .. }
             | Kind::NearEq { lhs, rhs, .. } => vec![lhs, rhs],
+            Kind::Implies {
+                premise,
+                conclusion,
+            } => vec![premise, conclusion],
             Kind::And { terms } | Kind::Fold { terms, .. } => terms.iter().collect(),
             Kind::Block(block) => block.expressions().collect(),
             Kind::Aggregate {
@@ -246,6 +250,18 @@ pub enum Kind {
     /// separation outright.
     And {
         terms: Vec<Expr>,
+    },
+    /// `premise implies conclusion`: true wherever the premise is false or
+    /// the conclusion true.
+    ///
+    /// Kept as the author wrote it, like `NearEq`. `eval::irgen` lowers it to
+    /// `min(not premise, conclusion)`, the negation by complementing each
+    /// comparison rather than negating a residual (its doc says why), and
+    /// `cvg::classify` reads one at the root as opaque: an equality under it
+    /// holds only where the premise does, so it determines nothing.
+    Implies {
+        premise: Box<Expr>,
+        conclusion: Box<Expr>,
     },
 }
 
@@ -566,7 +582,9 @@ pub(crate) fn is_integral(expr: &Expr, env: &[bool]) -> bool {
         }
         Kind::Fold { terms, .. } => terms.iter().all(|term| is_integral(term, env)),
         Kind::Block(block) => block_is_integral(block, &mut env.to_vec()),
-        Kind::Compare { .. } | Kind::NearEq { .. } | Kind::And { .. } => false,
+        Kind::Compare { .. } | Kind::NearEq { .. } | Kind::And { .. } | Kind::Implies { .. } => {
+            false
+        }
     }
 }
 
@@ -652,6 +670,7 @@ mod tests {
                 Kind::Compare { .. } => "compare",
                 Kind::NearEq { .. } => "near-eq",
                 Kind::And { .. } => "and",
+                Kind::Implies { .. } => "implies",
             })
             .collect()
     }
@@ -725,6 +744,10 @@ mod tests {
         );
         assert_eq!(and.children().len(), 3);
         assert_eq!(Expr::new(Kind::Block(block()), at).children().len(), 2);
+        let implies = crate::parse("x1 > 0 implies (x2 > 0 implies x1 < x2)").expect("parses");
+        // implies[compare[global, literal], implies[compare[global, literal],
+        // compare[global, global]]] = 11
+        assert_eq!(implies.program().body.iter_preorder().count(), 11);
     }
 
     /// A `var` bound to something integral is integral after it; an

@@ -1,0 +1,3 @@
+sep=;
+version                 ;timestamp               ;host                    ;vars ;constraints ;proposal-budget ;compile-ms  ;solve-ms    ;outcome                 ;sample-ms   ;points ;
+0.4.2                   ;2026-11-05T00:31:49Z    ;BATOU                   ;50   ;200         ;10000000        ;22.6        ;0.1         ;proved/11               ;            ;       ;

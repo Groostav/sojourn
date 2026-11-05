@@ -33,9 +33,11 @@
 //! that satisfy the constraint — too wide costs a rejected proposal, never a
 //! wrong point.
 
+use std::collections::HashMap;
+
 use crate::Ast;
-use crate::ast::{BinaryOp, CompareOp, GlobalId};
-use crate::cvg::incidence::Row;
+use crate::ast::{BinaryOp, CompareOp, GlobalId, UnaryOp};
+use crate::cvg::incidence::{ConstraintId, Row};
 use crate::cvg::interval::{self, Interval};
 use crate::eval::irgen;
 use crate::eval::tape::{Accumulate, Instruction, VirtualRegister, VirtualTape};
@@ -209,6 +211,43 @@ impl IntervalTape {
     ) -> Interval {
         self.forward(globals, frames);
         let wanted = u32::try_from(wanted.index()).expect("fewer than four billion symbols");
+        self.backward(Some(wanted), frames)
+    }
+
+    /// What the constraint requires of each slot in `held` — the shared
+    /// subexpressions it computes — with every symbol at the interval
+    /// `globals` gives it: per slot, the interval the slot *can* take over
+    /// the box, and the part of that it *must* take for the constraint to
+    /// hold. `must` is [`Interval::EMPTY`] everywhere when the constraint
+    /// holds nowhere on the box.
+    pub(crate) fn require(
+        &self,
+        globals: &[Interval],
+        held: &[(usize, u32)],
+        frames: &mut Frames,
+    ) -> Vec<(Interval, Interval)> {
+        self.forward(globals, frames);
+        let holds_nowhere = self.backward(None, frames).is_empty();
+        held.iter()
+            .map(|(_, slot)| {
+                let can = frames.forward[*slot as usize];
+                let must = if holds_nowhere {
+                    Interval::EMPTY
+                } else {
+                    can.intersect(frames.need[*slot as usize])
+                };
+                (can, must)
+            })
+            .collect()
+    }
+
+    /// The backward sweep over `frames.forward`, leaving every slot's
+    /// requirement in `frames.need`. With a `wanted` symbol it skips what
+    /// cannot reach it and returns what that symbol may be; without one it
+    /// visits everything the residual's requirement reaches and returns
+    /// [`Interval::ENTIRE`]. Either way [`Interval::EMPTY`] is the constraint
+    /// holding nowhere.
+    fn backward(&self, wanted: Option<u32>, frames: &mut Frames) -> Interval {
         let Frames { forward, need } = frames;
         need.clear();
         need.resize(self.slots, Interval::ENTIRE);
@@ -219,7 +258,8 @@ impl IntervalTape {
             let Some(dst) = step.dst() else {
                 continue;
             };
-            if !self.depends_on(dst, wanted) || need[dst as usize] == Interval::ENTIRE {
+            let unreachable = wanted.is_some_and(|wanted| !self.depends_on(dst, wanted));
+            if unreachable || need[dst as usize] == Interval::ENTIRE {
                 continue;
             }
             // What this value must be, and can be. Nothing in the overlap
@@ -230,7 +270,7 @@ impl IntervalTape {
             }
             match *step {
                 Instruction::Load { input, .. } => {
-                    if input == wanted {
+                    if Some(input) == wanted {
                         found = found.intersect(target);
                     }
                 }
@@ -305,6 +345,67 @@ impl IntervalTape {
         let value = *self.consts.get(b as usize)?;
         crate::ast::to_index(value).filter(|n| n.abs() <= crate::ast::POWER_LIMIT)
     }
+
+    /// Every slot an operator computes, paired with its subexpression's
+    /// interned [`Term`], the constraint's symbols read as `rows`. Loads and
+    /// constants are left out: a coordinate is already shared through the
+    /// box, and a constant needs no sharing.
+    fn terms(&self, rows: &[Row], interned: &mut HashMap<Term, u32>) -> Vec<(u32, u32)> {
+        let mut keys: Vec<Option<u32>> = vec![None; self.slots];
+        for (slot, value) in self.consts.iter().enumerate() {
+            keys[slot] = Some(intern(interned, Term::Const(value.to_bits())));
+        }
+        let mut computed = Vec::new();
+        for step in &self.steps {
+            let (dst, key, operator) = match *step {
+                Instruction::Load { dst, input } => (
+                    dst,
+                    rows.get(input as usize)
+                        .map(|row| intern(interned, Term::Row(*row))),
+                    false,
+                ),
+                Instruction::Copy { dst, src } => (dst, keys[src as usize], false),
+                Instruction::Unary { dst, op, a } => (
+                    dst,
+                    keys[a as usize].map(|a| intern(interned, Term::Unary(op, a))),
+                    true,
+                ),
+                Instruction::Binary { dst, op, a, b } => (
+                    dst,
+                    binary_term(interned, op, keys[a as usize], keys[b as usize]),
+                    true,
+                ),
+                Instruction::Combine {
+                    dst,
+                    how: how @ (Accumulate::Sum | Accumulate::Prod),
+                    a,
+                    b,
+                    ..
+                } => (
+                    dst,
+                    binary_term(interned, how_op(how), keys[a as usize], keys[b as usize]),
+                    true,
+                ),
+                // A residual and a conjunction of residuals are one
+                // constraint's verdict, not a value another computes; a
+                // gather reads a column the point picks, so it has no
+                // structure to match.
+                Instruction::Compare { dst, .. }
+                | Instruction::Combine {
+                    dst,
+                    how: Accumulate::Worst,
+                    ..
+                }
+                | Instruction::Gather { dst, .. } => (dst, None, false),
+                Instruction::Check { .. } => continue,
+            };
+            keys[dst as usize] = key;
+            if operator && let Some(key) = key {
+                computed.push((key, dst));
+            }
+        }
+        computed
+    }
 }
 
 /// Which operand a comparison's residual subtracts from which: `a < b` is
@@ -321,6 +422,137 @@ const fn how_op(how: Accumulate) -> BinaryOp {
         Accumulate::Sum => BinaryOp::Add,
         Accumulate::Prod => BinaryOp::Mul,
         Accumulate::Worst => BinaryOp::Max,
+    }
+}
+
+// ----------------------------------------------------- shared subexpressions
+
+/// The subexpressions more than one constraint computes, and where in each
+/// constraint's tape they are.
+///
+/// HC4 narrows coordinates, one constraint at a time, so a contradiction
+/// that lives in a subexpression rather than in any one coordinate is
+/// invisible to it: `x + y <= 1` against `x + y >= 1 + 1e-9` takes a
+/// billionth off `x` and `y` a visit and never empties either. The sum is
+/// one value both constraints compute, though, and what each requires of it
+/// — at most 1, at least `1 + 1e-9` — has nothing in common. So a box
+/// carries an interval per shared subexpression as well as per coordinate
+/// (`prune::Node`), and a contraction intersects every constraint's
+/// requirement on it into that interval: empty is a proof. This is HC4 over
+/// the constraints' common DAG, in the literature's terms, done only where
+/// the DAG has a node two constraints share.
+///
+/// Matching is structural over the canonical tree as lowered: the same
+/// operators over the same coordinates and constants, with `+`, `*`, `max`
+/// and `min` taking their operands in either order, and `sum`/`prod` folds
+/// read as the `+`/`*` they are. **There is deliberately no simplification
+/// to a canonical polynomial form, nor any more general one**, though that
+/// is what would make `2*x + 2*y >= 2.000000002` meet `x + y <= 1` and stays
+/// `NotFound` instead. Expanding, collecting coefficients and certifying a
+/// linear combination (Farkas' lemma, an LP with outward rounding) would add
+/// a great deal of machinery to the front of every contraction for a class of
+/// systems — contradictions thinner than a sample can tell from empty — with
+/// no clear win in the regime this crate serves, which is sampling regions
+/// that exist. `tests/cvg_pools.rs` pins both sides of that line.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SharedTerms {
+    /// How many there are: a box carries one interval for each.
+    count: usize,
+    /// Per constraint, `(term, slot)` for each slot of its tape that computes
+    /// a shared term — twice where it computes one twice.
+    held: Vec<Vec<(usize, u32)>>,
+}
+
+impl SharedTerms {
+    pub(crate) const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The shared terms constraint `id` computes, as `(term, slot)`.
+    pub(crate) fn of(&self, id: ConstraintId) -> &[(usize, u32)] {
+        &self.held[id.index()]
+    }
+}
+
+/// Finds the subexpressions two or more of `constraints` compute, each
+/// constraint given as its tape and the rows its symbols read, in order.
+/// Terms are numbered in the order they are first met, so the numbering is a
+/// function of the system alone.
+pub(crate) fn shared(constraints: &[(&IntervalTape, &[Row])]) -> SharedTerms {
+    let mut interned: HashMap<Term, u32> = HashMap::new();
+    let computed: Vec<Vec<(u32, u32)>> = constraints
+        .iter()
+        .map(|(tape, rows)| tape.terms(rows, &mut interned))
+        .collect();
+
+    let mut owners: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (constraint, terms) in computed.iter().enumerate() {
+        for (key, _) in terms {
+            let owner = owners.entry(*key).or_default();
+            if owner.last() != Some(&constraint) {
+                owner.push(constraint);
+            }
+        }
+    }
+
+    let mut numbered: HashMap<u32, usize> = HashMap::new();
+    let held = computed
+        .iter()
+        .map(|terms| {
+            terms
+                .iter()
+                .filter(|(key, _)| owners[key].len() >= 2)
+                .map(|(key, slot)| {
+                    let next = numbered.len();
+                    (*numbered.entry(*key).or_insert(next), *slot)
+                })
+                .collect()
+        })
+        .collect();
+    SharedTerms {
+        count: numbered.len(),
+        held,
+    }
+}
+
+/// One subexpression's structure with its symbols read as rows, so that the
+/// same arithmetic in two constraints is the same key. Operands are interned
+/// ids, so a key is the size of one instruction however deep the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Term {
+    Row(Row),
+    /// By bits: `0.0` and `-0.0` are two keys, which costs a match and never
+    /// makes a wrong one.
+    Const(u64),
+    Unary(UnaryOp, u32),
+    Binary(BinaryOp, u32, u32),
+}
+
+fn intern(interned: &mut HashMap<Term, u32>, term: Term) -> u32 {
+    let next = u32::try_from(interned.len()).expect("fewer than four billion subexpressions");
+    *interned.entry(term).or_insert(next)
+}
+
+/// The key of `a op b`, operands ordered where the operator commutes.
+fn binary_term(
+    interned: &mut HashMap<Term, u32>,
+    op: BinaryOp,
+    a: Option<u32>,
+    b: Option<u32>,
+) -> Option<u32> {
+    let (a, b) = (a?, b?);
+    let (a, b) = if commutes(op) {
+        (a.min(b), a.max(b))
+    } else {
+        (a, b)
+    };
+    Some(intern(interned, Term::Binary(op, a, b)))
+}
+
+const fn commutes(op: BinaryOp) -> bool {
+    match op {
+        BinaryOp::Add | BinaryOp::Mul | BinaryOp::Max | BinaryOp::Min => true,
+        BinaryOp::Sub | BinaryOp::Div | BinaryOp::Rem | BinaryOp::Pow | BinaryOp::LogB => false,
     }
 }
 
@@ -499,6 +731,29 @@ mod tests {
         let got = narrower.narrow(&globals, wanted, &mut frames);
         // 49 others at 1 leave 51 for this one.
         assert!(got.hi() >= 51.0 && got.hi() < 51.0 + 1e-6, "{got:?}");
+    }
+
+    /// A sum written either way round is one subexpression, and the same
+    /// half-plane scaled is not: matching is structural, with no algebra.
+    #[test]
+    fn when_two_constraints_compute_one_sum_in_either_order_should_share_it_and_nothing_else() {
+        // setup
+        let variables = vec![
+            crate::InputVariable::new_continuous("x", -1.0, 1.0),
+            crate::InputVariable::new_continuous("y", -1.0, 1.0),
+        ];
+
+        // act
+        let system = crate::system::tests::system(
+            variables,
+            &["x + y <= 1", "y + x >= -1", "2*x + 2*y >= 2"],
+        );
+
+        // assert
+        assert_eq!(system.shared.count(), 1);
+        assert_eq!(system.shared.of(ConstraintId(0)).len(), 1);
+        assert_eq!(system.shared.of(ConstraintId(1)).len(), 1);
+        assert!(system.shared.of(ConstraintId(2)).is_empty());
     }
 
     /// A discrete coordinate's slice is rounded onto its levels: `n > 2.5`

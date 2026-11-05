@@ -47,7 +47,9 @@ mod common;
 use faer::Mat;
 use rand::SeedableRng;
 use rand::rngs::Xoshiro256PlusPlus;
-use sojourn::{ConstraintSolver, ConstraintSystem, InputVariable, SampleError, SystemError};
+use sojourn::{
+    ConstraintSolver, ConstraintSystem, InputVariable, MalformedConstraintSystemError, SampleError,
+};
 
 /// Pinned so a failure is reproducible, and the same value the other cvg suites
 /// use so a point seen in one is the point seen in another.
@@ -408,7 +410,7 @@ fn a_driven_variable_a_solver_can_reach_is_still_explored() {
 ///
 /// It is also not a claim of emptiness. `sin(x) == x/2` has three solutions and
 /// `x == x*x + 2` is an ordinary quadratic, so `SolveError::Unsatisfiable`
-/// would be false. `SystemError` is the shape for "we will not try".
+/// would be false. `MalformedConstraintSystemError` is the shape for "we will not try".
 #[test]
 fn an_implicit_equality_is_refused_by_name() {
     for (source, variable) in [
@@ -428,7 +430,7 @@ fn an_implicit_equality_is_refused_by_name() {
         )
         .expect_err("a variable on both sides should be refused");
 
-        let SystemError::Implicit {
+        let MalformedConstraintSystemError::Implicit {
             variable: named, ..
         } = &error
         else {

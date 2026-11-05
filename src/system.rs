@@ -126,10 +126,14 @@ impl InputVariable {
     /// validated once.
     ///
     /// # Panics
-    /// If the domain is ill-formed, as [`ConstraintSystem::new`] would.
+    /// If the domain is ill-formed, which [`ConstraintSystem::new`] refuses
+    /// with [`MalformedConstraintSystemError::MalformedDomain`].
     #[must_use]
     pub fn contains(&self, value: f64) -> bool {
-        VariableSupport::of(self).contains(value)
+        match VariableSupport::of(self) {
+            Ok(support) => support.contains(value),
+            Err(defect) => panic!("variable {:?} {defect}", self.name),
+        }
     }
 }
 
@@ -259,11 +263,81 @@ pub struct ConstraintSystem {
     /// each time, which on two hundred variables under two hundred constraints
     /// is forty thousand scans a sweep to do two hundred narrowings.
     pub(crate) incidence: Incidence,
+    /// The subexpressions more than one constraint computes, which a
+    /// contraction narrows as it narrows coordinates: a contradiction can
+    /// live in a sum two constraints bound and in neither coordinate. See
+    /// [`hc4::SharedTerms`].
+    pub(crate) shared: hc4::SharedTerms,
 }
 
-/// A system that does not hold together.
+/// What is wrong with a [`Domain`], without the variable that declared it:
+/// [`MalformedConstraintSystemError::MalformedDomain`] names that. Each reads
+/// as the rest of a sentence beginning with the variable's name.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum SystemError {
+#[non_exhaustive]
+pub enum DomainDefect {
+    /// A bound is NaN or infinite. A box with an infinite side has no uniform
+    /// draw and no centre to start a local solve from.
+    #[error("ranges over [{lower}, {upper}]; bounds must be finite")]
+    NonFiniteBounds { lower: f64, upper: f64 },
+    /// The lower bound is above the upper. Left alone it would read as a
+    /// proof of infeasibility blaming a constraint, which is a wrong answer
+    /// rather than a refusal.
+    #[error("has lower bound {lower} above its upper bound {upper}")]
+    InvertedBounds { lower: f64, upper: f64 },
+    /// A [`Domain::Stepped`] step that is zero, negative or not finite.
+    #[error("steps by {step}; a step must be positive and finite")]
+    NonPositiveStep { step: f64 },
+    /// A [`Domain::Stepped`] whose levels never reach the upper bound.
+    #[error(
+        "steps by {step} from {lower}, which never lands on its upper bound {upper}; declare \
+         its values with Domain::Levels if they are not evenly spaced"
+    )]
+    StepMissesUpperBound { lower: f64, step: f64, upper: f64 },
+    /// A [`Domain::Stepped`] that cannot be held as decimal integers below
+    /// 2^53: a step that is no short decimal (`1/3`), or more levels than
+    /// `f64` can count (`0` to `1` by `1e-20`).
+    #[error(
+        "steps by {step} from {lower} to {upper}, which is too fine to index exactly in f64; \
+         declare its values with Domain::Levels instead"
+    )]
+    LatticeTooFine { lower: f64, step: f64, upper: f64 },
+    /// A [`Domain::Levels`] with nothing in it.
+    #[error("has no levels")]
+    NoLevels,
+    /// A [`Domain::Levels`] holding NaN or an infinity; the first one listed.
+    #[error("has a level {level}; levels must be finite")]
+    NonFiniteLevel { level: f64 },
+    /// A [`Domain::Levels`] listing one value twice in a row.
+    #[error("lists the level {level} twice")]
+    RepeatedLevel { level: f64 },
+    /// A [`Domain::Levels`] out of order; the first pair that is.
+    #[error("lists the level {after} after {before}; levels must be strictly ascending")]
+    DescendingLevels { before: f64, after: f64 },
+}
+
+/// Why [`ConstraintSystem::new`] refused to build a system: a variable
+/// declared wrongly, or a constraint that does not fit the variables.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MalformedConstraintSystemError {
+    /// A variable named with something that is not a legal Babel variable
+    /// name ([`is_legal_variable_name`](crate::is_legal_variable_name)), so
+    /// no constraint could refer to it.
+    #[error("variable {index} is named {variable:?}, which is not a legal variable name")]
+    IllegalVariableName { index: usize, variable: String },
+    /// A variable that repeats an earlier one's name, so a constraint naming
+    /// it would be ambiguous.
+    #[error("variable {index} repeats the name {variable:?}")]
+    RepeatedVariableName { index: usize, variable: String },
+    /// A variable whose [`Domain`] is ill-formed. Equal bounds and a single
+    /// level are not: they fix the variable.
+    #[error("variable {variable:?} {defect}")]
+    MalformedDomain {
+        index: usize,
+        variable: String,
+        defect: DomainDefect,
+    },
     /// A constraint's text is not a babel expression. Carries every problem the
     /// parser found, with spans, the way [`compile`](crate::compile) would.
     #[error("constraint {constraint} did not parse: {failure}")]
@@ -334,40 +408,49 @@ impl ConstraintSystem {
     /// to the box.
     ///
     /// # Errors
-    /// [`SystemError`] for the first constraint that does not fit. One rather
-    /// than all: an unbound name is nearly always a typo, and a list of
-    /// consequences is less use than the cause.
+    /// [`MalformedConstraintSystemError`] for the first thing that does not
+    /// fit, variables before constraints. One rather than all: an unbound name
+    /// is nearly always a typo, and a list of consequences is less use than
+    /// the cause.
     ///
-    /// # Panics
-    /// If a variable is named with anything but a legal Babel variable name
-    /// ([`is_legal_variable_name`](crate::is_legal_variable_name)), repeats an
-    /// earlier variable's name, or declares an ill-formed [`Domain`]: bounds
-    /// that are not finite or have the lower above the upper; a step that is
-    /// not positive and finite, does not land on the upper bound, or is too
-    /// fine to hold exactly (see [`Domain::Stepped`]); levels that are empty,
-    /// not finite or not strictly ascending. Equal bounds and a single level
-    /// are fine: they fix the variable. These are the caller's to check, not
-    /// verdicts about the system, and without them the answers are wrong
-    /// rather than refused: inverted bounds read as proved infeasible,
+    /// A variable is refused if its name is not a legal Babel variable name
+    /// or repeats an earlier one, or if it declares an ill-formed [`Domain`]
+    /// ([`DomainDefect`] lists how). Those are refusals rather than panics
+    /// because a caller reading declarations from a file or a command line
+    /// cannot check a lattice without repeating the decimal arithmetic in
+    /// [`Domain::Stepped`]; and refusals rather than tolerated because without
+    /// them the answers are wrong: inverted bounds read as proved infeasible,
     /// blaming a constraint.
     pub fn new<S: Into<String>>(
         variables: Vec<InputVariable>,
         constraints: impl IntoIterator<Item = S>,
-    ) -> Result<Self, SystemError> {
+    ) -> Result<Self, MalformedConstraintSystemError> {
         let mut supports = Vec::with_capacity(variables.len());
         for (index, variable) in variables.iter().enumerate() {
             let name = &variable.name;
-            assert!(
-                crate::is_legal_variable_name(name),
-                "variable {index} is named {name:?}, which is not a legal variable name"
-            );
-            assert!(
-                variables[..index]
-                    .iter()
-                    .all(|earlier| earlier.name != *name),
-                "variable {index} repeats the name {name:?}"
-            );
-            supports.push(VariableSupport::of(variable));
+            if !crate::is_legal_variable_name(name) {
+                return Err(MalformedConstraintSystemError::IllegalVariableName {
+                    index,
+                    variable: name.clone(),
+                });
+            }
+            if variables[..index]
+                .iter()
+                .any(|earlier| earlier.name == *name)
+            {
+                return Err(MalformedConstraintSystemError::RepeatedVariableName {
+                    index,
+                    variable: name.clone(),
+                });
+            }
+            let support = VariableSupport::of(variable).map_err(|defect| {
+                MalformedConstraintSystemError::MalformedDomain {
+                    index,
+                    variable: name.clone(),
+                    defect,
+                }
+            })?;
+            supports.push(support);
         }
         let schema = Schema::new(variables.iter().map(|input| input.name.clone()));
 
@@ -379,12 +462,14 @@ impl ConstraintSystem {
                 index,
                 source: source.clone(),
             };
-            let constraint = crate::parse(&source).map_err(|failure| SystemError::Unparsable {
-                constraint: named.clone(),
-                failure,
+            let constraint = crate::parse(&source).map_err(|failure| {
+                MalformedConstraintSystemError::Unparsable {
+                    constraint: named.clone(),
+                    failure,
+                }
             })?;
             if !constraint.is_constraint() {
-                return Err(SystemError::NotAConstraint { constraint: named });
+                return Err(MalformedConstraintSystemError::NotAConstraint { constraint: named });
             }
 
             // A schema exists here and nowhere earlier, so this is the first
@@ -393,7 +478,7 @@ impl ConstraintSystem {
             // whole constraint rather than reason about it, and `interval`
             // would narrow nothing through it.
             let constraint = crate::frontend::rewrite::resolve_subscripts(constraint, &schema)
-                .map_err(|fault| SystemError::Unbound {
+                .map_err(|fault| MalformedConstraintSystemError::Unbound {
                     constraint: named.clone(),
                     failure: crate::frontend::failure(&source, vec![fault]),
                 })?;
@@ -403,7 +488,7 @@ impl ConstraintSystem {
             let tape = match crate::eval::bind(&constraint, &schema, Gradient::BestEffort) {
                 Ok(tape) => tape,
                 Err(failure) => {
-                    return Err(SystemError::Unbound {
+                    return Err(MalformedConstraintSystemError::Unbound {
                         constraint: named,
                         failure,
                     });
@@ -414,7 +499,7 @@ impl ConstraintSystem {
             // better message than anything about shape when both are true of
             // the same constraint.
             if let classify::Shape::Implicit { variable } = classify::shape(&constraint) {
-                return Err(SystemError::Implicit {
+                return Err(MalformedConstraintSystemError::Implicit {
                     constraint: named,
                     variable: constraint.symbols()[variable.index()].clone(),
                 });
@@ -429,7 +514,7 @@ impl ConstraintSystem {
                     .eval_row(&anywhere)
                     .is_ok_and(|residual| residual <= 0.0)
                 {
-                    return Err(SystemError::NeverHolds { constraint: named });
+                    return Err(MalformedConstraintSystemError::NeverHolds { constraint: named });
                 }
             }
             resolved.push(constraint);
@@ -462,7 +547,7 @@ impl ConstraintSystem {
         }
         let incidence = incidence.with_always(&always);
 
-        let constraints = resolved
+        let constraints: Vec<Constraint> = resolved
             .into_iter()
             .zip(compiled)
             .map(|(written, compiled)| Constraint {
@@ -471,6 +556,17 @@ impl ConstraintSystem {
                 compiled,
             })
             .collect();
+        let tapes: Vec<(&IntervalTape, &[Row])> = constraints
+            .iter()
+            .enumerate()
+            .map(|(position, constraint)| {
+                (
+                    &constraint.intervals,
+                    incidence.rows_of(ConstraintId(position)),
+                )
+            })
+            .collect();
+        let shared = hc4::shared(&tapes);
 
         Ok(Self {
             variables,
@@ -478,6 +574,7 @@ impl ConstraintSystem {
             constraints,
             plans,
             incidence,
+            shared,
         })
     }
 
@@ -736,7 +833,7 @@ pub(crate) mod tests {
 
     use crate::cvg::incidence::{ConstraintId, Row};
     use crate::diagnostics::{ProblemKind, Span};
-    use crate::{ConstraintSystem, InputVariable, Point, SystemError};
+    use crate::{ConstraintSystem, InputVariable, MalformedConstraintSystemError, Point};
 
     pub(crate) fn system(inputs: Vec<InputVariable>, sources: &[&str]) -> ConstraintSystem {
         ConstraintSystem::new(inputs, sources.iter().copied()).expect("the fixture binds")
@@ -752,7 +849,7 @@ pub(crate) mod tests {
         )
         .expect_err("x9 is not declared");
 
-        let SystemError::Unbound {
+        let MalformedConstraintSystemError::Unbound {
             constraint,
             failure,
         } = error
@@ -783,7 +880,7 @@ pub(crate) mod tests {
         )
         .expect_err("there is no third variable");
 
-        let SystemError::Unbound {
+        let MalformedConstraintSystemError::Unbound {
             constraint,
             failure,
         } = error
@@ -829,7 +926,7 @@ pub(crate) mod tests {
                 .expect_err("the second constraint never holds");
 
             // assert
-            let SystemError::NeverHolds { constraint } = error else {
+            let MalformedConstraintSystemError::NeverHolds { constraint } = error else {
                 panic!("expected NeverHolds for {sources:?}, got {error:?}");
             };
             assert_eq!(constraint.index, 1);

@@ -9,10 +9,6 @@ walker, and distribution oracles with critical values behind them.
 **[Part two](#the-reasoning) is the reasoning** behind it: the measurements, the
 things that went wrong, and the decisions that are not obvious from the code.
 
-The through-line: **the measure that matters is `Document::untranslated`** — the
-constraints the emitter cannot write down, which the pool must then attack blind.
-Every wave is ordered so each item shrinks the input to the next.
-
 ---
 
 ## Dropped features
@@ -153,23 +149,6 @@ thing to read, and is the first work item rather than an admission.
 - [x] **`log(base, u)` in the inversion table.** The two halves of one
       relationship: each is the other's inverse, both monotone in `u`, both
       reversing below a base of one.
-- [ ] **Causalization — the matching third only.** The measurement says the
-      full Modelica pipeline is over-specified for what is left. Of the six:
-
-      | | constraints | needs |
-      |---|---|---|
-      | driven | `y == sin(x)`, `y > sin(theta)`, `y < sin(x*pi)`, `y > 1.1*sin(x*pi-0.5)` | bipartite matching |
-      | periodic set | `sin(x1) <= 0` | interval decomposition on a bounded domain |
-      | implicit | `x1 > sin(ln(cos(2.1^x1)))` | nothing; correctly reported |
-
-      **There are no strongly-connected components anywhere in the residue** —
-      so no BLT, no tearing, no Newton. Those exist to break algebraic loops and
-      there are none. Build the matching and stop.
-      **Caveat on all of this:** the corpus is sojourn-CVG's *test* fixtures, not
-      customer expressions. If real formulations contain implicit trigonometry —
-      `sin(x) == x/2` shapes — the SCC case returns and so does the tearing work.
-      Worth asking Garry before committing to skip it.
-      The wave-2 write-up of the trick itself is in `todo-overtaken.md` under "Duplicates".
 - [x] **Interval propagation, in `cvg::interval`.** HC4-revise: with every other
       coordinate held, what interval does this constraint admit for this one?
       `ConstraintSystem::slice` intersects that across every constraint naming the
@@ -259,42 +238,6 @@ thing to read, and is the first work item rather than an admission.
       that fuses the five instructions, not an AST node. An optimisation belongs
       where optimisations belong, and the front end stays simple either way.
 
-- [ ] **A design of experiments over driven arguments.** Latin hypercube or
-      Sobol over the argument expression's variables. A correctness issue, not a
-      tuning one: pick one `x` and every point in the pool shares a `y`, which
-      is a constant rather than a sample.
-      The reasoning — why one `x` makes `y` a constant, not a sample — is in `todo-overtaken.md` under "Duplicates".
-- [x] **Repair a near-miss point instead of discarding it.** Done in its minimal
-      form: `ConstraintSystem::adjusted`, a bounded coordinate sweep run on a solver's seed.
-      It landed because it had to. Emitting `a == b +/- t` as two bounds rather
-      than `max(...) <= 0` changed which *edge* Z3 picks, and `cvg_pools::constants`
-      went red — Z3 answers with the boundary exactly, because a boundary is the
-      simplest solution there is, and `f64` then rounds it a hair outside. The
-      previous green was luck: the old encoding happened to make Z3 pick the edge
-      where the rounding went the other way.
-      What is still owed is the gradient version. This steps coordinate-wise by
-      ulps, which is right for a boundary witness and nothing else; it cannot
-      rescue a point that is genuinely infeasible, and a test pins that it does
-      not try.
-- [ ] **The gradient version of repair.** When the solver
-      nominates a point that babel's own `evaluate` then rejects, the pool bins
-      it — throwing away the expensive half of the work over a difference the
-      solver could not have seen, since it reasons in exact reals and we filter
-      in `f64`. Perturb toward feasibility instead. The residual is signed and
-      graded, so it says how badly and a finite-difference gradient says which
-      way; isotropic jitter is the wrong tool in high dimensions, for the same
-      concentration-of-measure reason the walker already has to work around.
-      Watch the distribution: repairing a *seed* is free, repairing an *emitted*
-      point skews the marginals, and `cvg_benchmarks` is what would catch it.
-
-- [x] ~~**`take` should be `async`.**~~ Moot: `take`, the stream and the
-      worker are gone (2026-09-16, below). `solve` is synchronous and
-      `sample` is a design, not a stream.
-- [x] ~~**`impl Stream for FeasibleSamples`**~~, likewise.
-- [ ] **A pipeline to hang these on.** Causalization splits one problem in two
-      and the DOE turns one into `n`; both are `SolverProposal -> Vec<_>`, so a
-      `flat_map` chain is the shape. Deliberately not designed yet — the trigger
-      is the *second* fan-out pass.
 
 ### Parallel — the evaluator, not the solver
 
@@ -312,6 +255,39 @@ thing to read, and is the first work item rather than an admission.
       The accuracy notes (SLEEF, Cody–Waite, the `FSIN` story) are in `todo-overtaken.md` under "Duplicates".
 
 ### Standing
+
+- [ ] **Ten thousand constraints: what breaks, in order.** *2026-11-04.* `just scale`
+      (`tests/scale_benchmarks.rs`) solves generated systems: `top_corner_200d` coupled
+      by 9 800 `xi - xj < 0.25`, and 10 000 mutated templates over windows of five of
+      200 variables, planted feasible at one point. Measured on BATOU, first in this
+      order:
+      1. **COBYLA's budget counts the wrong thing.** On the mutants each start used its
+         1 608 evaluations in about 390 s, 0.24 s an evaluation, nearly all of it model
+         algebra over 10 400 rows in 200 dimensions. The constraint evaluations were
+         microseconds. Four starts landed nothing, and the ladder would then have run
+         one start per bisection leaf, 127 of them: about fourteen hours, every loop a
+         count, which is a hang in all but name. The stopgap is
+         `local::MODEL_ALGEBRA_LIMIT`: no local solve once rows × d² passes `5e7`,
+         about twice the 100-segment beam. The fix is a local solve whose cost per step
+         follows the Jacobian's sparsity, which `newton.rs` already has for repair.
+         `local::nearest` (repair's COBYLA projection) has the same exposure and no
+         gate yet.
+      2. **With the gate, the mutants are `NotFound`.** Contraction and 256 bisections
+         take 2.7 s, the 127 leaves give no seed, and ten million brute-force proposals
+         take 165 s and land nothing (`scale-mutants-10k.csv`). That's honest, since a
+         planted region of that size is not something sampling finds, but the region
+         exists, so this is the case a scalable local solve has to turn into `found`.
+         `silent=7487`: interval reasoning concluded nothing from three quarters of
+         the mutants. Unexamined. `sin`/`cos`/`max`/`min` declining inverses would
+         account for some of it.
+      3. **The corner is found at once and then walked slowly.** Contraction settles
+         `[10.5, 11]^200` and its centre is a seed in 0.34 s. Then the burn-in judges
+         101 349 points in 34.6 s and a ten-point design 233 440 in 79 s: 0.34 ms a
+         judgement, all 10 000 constraints each time. An axis move names one variable
+         and about a hundred couplings, so `Incidence::affected` (retired on 2026-09-12
+         as noise at 200 constraints) would be worth about a hundredfold here. Bring it
+         back behind a measurement at both scales.
+      The unplanted 200 over 50 is proved in 0.1 ms (eleven constraints blamed).
 
 - [ ] **Sampling quality: a baseline, then a pool to choose from.** *2026-10-21.* The
       plan is `docs/sampling-quality.md`; step 1 (`sojourn::quality`, the closed-form
@@ -538,32 +514,6 @@ thing to read, and is the first work item rather than an admission.
 - [ ] **Locals in a runtime error.** `RuntimeProblem::locals` is always empty;
       populating it needs a slot-to-name table the AST discards. Matters less
       now that the non-finite check is eager and the span is exact.
-- [ ] **Capability metadata per backend.** The cheap half — `emit` taking a
-      capability set rather than an implicit one — when a second backend exists.
-- [ ] **`cvg_benchmarks::p118` is red on every seed.** Polytope mixing. Swept
-      across ten seeds it failed all ten, at a mean KS of 0.124 against
-      thresholds around 0.10 — so unlike `top_corner_200d` this is not a
-      threshold it grazes, it is consistently short.
-
-      Probed: fifteen dimensions, condition number 79.5, spectrum
-      `230.45 155.12 49.06 21.84 …` — **two long axes and thirteen short ones, a
-      sheet rather than a tube**, and two independent chains agree on that
-      covariance to 16%, so the shape is the body's and not chain history.
-      Rejection cannot reach it even at 400M proposals, so no unbiased reference
-      exists and `RunsAgree` is the only oracle available.
-
-      Interval propagation does **not** move it (mean KS 0.141 with, 0.124
-      without, t ≈ 1.25). The long axes are eigenvectors rather than
-      coordinates, so exact axis-aligned moves are still the wrong moves. What
-      this implicates is rotational preconditioning, and measuring that needs
-      the benchmark family below rather than this one sample.
-
-      The sharpest single number, from the ten-seed run: one seed reports
-      **a thousand points worth twenty-four independent ones — 2.4% efficiency**,
-      through `assert_efficient`, which had been computing it all along with
-      nowhere to report it. That is the autocorrelation the KS failures are
-      downstream of, and it is a better target to optimise against than KS is:
-      it needs one run rather than two, and it moves continuously.
 - [ ] **The benchmark cannot resolve small changes.** Run-to-run spread is about
       15% on this machine; anything under that is not a reading. Also, no
       benchmark expression contains a constant subexpression, so folding is
@@ -594,6 +544,8 @@ thing to read, and is the first work item rather than an admission.
       `Vec` went with preconditioning, since the walker now holds it; the
       direction and candidate `Vec`s remain). Measure before optimising anything
       else here — this entry exists because that was skipped once already.
+      *2026-11-01: the first candidate is gone — `hc4::slice` runs over the
+      constraint's tape now, not an `Ast` (8.5× on a 200-term sum).*
 
 - [x] **`cvg_benchmarks` runs every problem on ten seeds and requires all ten.**
       One seed could not tell a real change from a lucky draw, and it was
@@ -1154,7 +1106,7 @@ A and B are dimension reductions. D is a branch choice. E is a matching problem.
 problems — C rearrangeable, F needing Newton — and both are the same thing seen
 from different sides: a variable named on both sides of an `==` makes the
 equality *implicit* in it, and nothing downstream can drive what it cannot
-isolate. `ConstraintSystem::new` rejects it with `SystemError::Implicit`:
+isolate. `ConstraintSystem::new` rejects it with `MalformedConstraintSystemError::Implicit`:
 
 > constraint c0 is implicit in x2: it names x2 on both sides, so nothing can
 > solve it for x2 without rearranging it first. Write x2 on one side only —
@@ -1171,7 +1123,7 @@ variable it names is the textbook implicit form, and that is what this is.
 still passes, which is the evidence that nothing was lost but the implicitness.
 It is also not a claim of emptiness: `sin(x) == x/2` has three solutions and
 `x == x*x + 2` is an ordinary quadratic, so `Unsatisfiable` would be false.
-`SystemError` is the shape for "we will not try".
+`MalformedConstraintSystemError` is the shape for "we will not try".
 
 **Two rules were tried and discarded before this one.**
 
@@ -1999,14 +1951,14 @@ Ordered by cost-to-value, cheapest first. Each step shrinks the input to the ste
       to ship. (An earlier attempt failed with CMake `FileTracker FTK1011`, which was MAX_PATH from
       a deep scratch directory, not Z3.) Feeding it `emit`'s actual output for `simple_arithmetic`:
 
-      - [ ] **The emitter must guard divisors.** Z3 returned `x1=x2=x3=x4=0` as a model — satisfying
+      - [x] **The emitter must guard divisors.** Z3 returned `x1=x2=x3=x4=0` as a model — satisfying
             the constraint via `x3/x4` = `0/0`, which SMT-LIB leaves *underspecified* so the solver
             may pick any value for it. Babel evaluates that point to NaN and rejects it, so the
             solver's answer would be silently discarded and the search would spin. Adding
             `(assert (not (= |x4| 0.0)))` produced a genuine point: `x4 = 1/2`, everything else zero.
             Every `(/ a b)` needs a side condition, which means the translator has to contribute
             assertions as well as a term.
-      - [ ] **`Solver::from_string` swallows parse errors.** A deliberately malformed document
+      - [x] **`Solver::from_string` swallows parse errors.** A deliberately malformed document
             returned **Sat** with an empty model rather than an error — the signature returns `()`.
             So an emitter bug would present as "solved it instantly". The backend has to verify the
             declared constants actually came back, or check Z3's error code, before believing a
@@ -2178,6 +2130,23 @@ Ordered by cost-to-value, cheapest first. Each step shrinks the input to the ste
       narrowed nothing over the whole opening — a computed subscript is the permanent case —
       and is empty when every constraint said something short of a proof.
 
+      **2026-10-30: the thin class shrank to what shares nothing.** A box now carries an
+      interval per subexpression two or more constraints compute (`hc4::SharedTerms`,
+      matched structurally with commutative operands ordered), and a contraction
+      intersects each constraint's backward requirement on it: `x + y <= 1` against
+      `x + y >= 1 + 1e-9` empties the root contraction and blames both. The same
+      half-planes with one side scaled, `2*x + 2*y >= 2 + 2e-9`, share no subexpression
+      and stay `NotFound`, pinned beside the proved case. Simplifying to a canonical
+      polynomial form would close that gap for linear and polynomial constraints (Farkas,
+      an LP with outward rounding), and was declined: a lot of machinery for
+      contradictions thinner than a sample can tell from empty, and no clear win when the
+      job is sampling regions that exist. Term requirements queue nothing, so the
+      contraction's cost is one extra sweep per visit of a constraint that holds a shared
+      term. The pins in `tests/torture_jumps.rs` that said a remainder, a parity or a
+      product of signs could never be proved now say so only of spellings that share
+      nothing (`x % 2` against `(x - 2) % 2`, say); over one shared subexpression each is
+      `Proved`, as is the shared disc-and-ring without a split.
+
       **Splitting is a low-dimensional tool.** At 4096 contractions the ten-segment beam
       (twenty variables, one piece, walker-carried) spent forty seconds of an unoptimised
       build bisecting for nothing, since twelve splits isolate nothing at twenty dimensions;
@@ -2227,7 +2196,7 @@ Ordered by cost-to-value, cheapest first. Each step shrinks the input to the ste
       `CompilationFailure` for both halves, and an unbound name is `ProblemKind::Unbound` at
       its first reference — `Ast::reference_spans` reads the spans off the tree's `Global`
       nodes, which had them all along, rather than keeping a second list beside `symbols`.
-      `SystemError::Unbound` carries the same failure. `Driven by:` `compile_errors::
+      `MalformedConstraintSystemError::Unbound` carries the same failure. `Driven by:` `compile_errors::
       an_unbound_name_gets_a_caret_at_its_first_reference`, `every_unbound_name_is_reported`,
       and `system::tests::an_unbound_name_in_a_constraint_points_at_it`.
 

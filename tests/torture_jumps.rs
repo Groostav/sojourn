@@ -188,6 +188,18 @@ fn assert_not_found(verdict: Result<FeasibleRegion, Infeasibility>) -> Vec<Strin
         .collect()
 }
 
+/// An infeasible system's verdict when interval reasoning can see it: a
+/// proof, and the sources it blames, in constraint order.
+fn assert_proved(verdict: Result<FeasibleRegion, Infeasibility>) -> Vec<String> {
+    let Err(Infeasibility::Proved { blamed }) = verdict else {
+        panic!("a contradiction over a shared subexpression should be proved, got {verdict:?}");
+    };
+    blamed
+        .iter()
+        .map(|constraint| constraint.source.clone())
+        .collect()
+}
+
 /// A satisfiable system's verdict: a region whose witness holds, or an
 /// honest shrug. `Proved` is the one answer that is a bug.
 fn assert_never_proved(system: &ConstraintSystem, verdict: Result<FeasibleRegion, Infeasibility>) {
@@ -246,34 +258,60 @@ fn assert_within_budget(log: &Captured) {
 // ---------------------------------------------------------------------------
 
 /// `x % 2` is at most `0.5` and at least `1.5`: each alone admits a quarter
-/// of the line, together they admit nothing, and no enclosure will ever say
-/// so. The image of a remainder over an interval is a magnitude bound —
-/// `[0, 2]` for any non-negative dividend, whatever its width — so the
-/// forward pass sees `[0, 0.5]` and `[1.5, 2]` as two consistent facts about
-/// two *different* instructions, and nothing inverts `%` to push either back
-/// onto `x`. Bisection changes nothing: the image is the same on every
-/// sub-box. So the contraction says nothing, the bisection spends its budget
-/// and brute force spends its own, and the verdict must be *not found* with
-/// both constraints named as the ones nothing could be concluded from.
+/// of the line, together they admit nothing, and no enclosure of `x` will
+/// ever say so. The image of a remainder over an interval is a magnitude
+/// bound — `[0, 2]` for any non-negative dividend, whatever its width — and
+/// nothing inverts `%` to push a requirement back onto `x`. But `x % 2` is
+/// one subexpression both constraints compute, and what they require of it
+/// is disjoint, so the root contraction proves it.
 #[test]
-fn a_remainder_contradiction_is_reported_not_found() -> anyhow::Result<()> {
+fn a_remainder_contradiction_over_one_remainder_is_proved() -> anyhow::Result<()> {
     let sources = &["x % 2 < 0.5", "x % 2 > 1.5"];
+    let system = system(&[("x", 0.0, 10.0)], sources)?;
+    assert_eq!(assert_proved(solver().solve(&system, &mut rng())), sources);
+    Ok(())
+}
+
+/// The same contradiction with the remainders spelled differently: on
+/// `[2, 10]`, `(x - 2) % 2` is `x % 2`, and below 2 it is negative. Now the
+/// two are *different* instructions, the forward pass sees two consistent
+/// facts about them, and bisection changes nothing — the image is the same
+/// on every sub-box. So the bisection spends its budget and brute force
+/// spends its own, and the verdict must be *not found*. The first constraint
+/// is named as one nothing could be concluded from; the second is not,
+/// since a remainder above `1.5` needs a positive dividend, which narrows
+/// `x` above 2 — something, though not a proof.
+#[test]
+fn a_remainder_contradiction_spelled_two_ways_is_reported_not_found() -> anyhow::Result<()> {
+    let sources = &["x % 2 < 0.5", "(x - 2) % 2 > 1.5"];
     let system = system(&[("x", 0.0, 10.0)], sources)?;
     let unexpressed = assert_not_found(solver().solve(&system, &mut rng()));
     assert_eq!(
-        unexpressed, sources,
-        "both remainders are opaque to the enclosure"
+        unexpressed,
+        &sources[..1],
+        "the first remainder is opaque to the enclosure"
     );
     Ok(())
 }
 
-/// Parity, spelled two incompatible ways: `floor(x) % 2` is both zero and
-/// one. The same blindness as above with a `floor` under the remainder,
-/// which is the shape a discrete constraint takes when written in a
-/// continuous language — and the shape a modeller writes twice by mistake.
+/// Parity, required two incompatible ways: `floor(x) % 2` is both zero and
+/// one. The shape a discrete constraint takes when written in a continuous
+/// language — and the shape a modeller writes twice by mistake. One shared
+/// remainder, so proved, as above.
 #[test]
-fn a_parity_contradiction_is_reported_not_found() -> anyhow::Result<()> {
+fn a_parity_contradiction_over_one_parity_is_proved() -> anyhow::Result<()> {
     let sources = &["floor(x) % 2 == 0 +/- 0.1", "floor(x) % 2 == 1 +/- 0.1"];
+    let system = system(&[("x", 0.0, 10.0)], sources)?;
+    assert_eq!(assert_proved(solver().solve(&system, &mut rng())), sources);
+    Ok(())
+}
+
+/// Parity spelled two ways: `floor(x + 1)` is `floor(x) + 1`, so both even
+/// is a contradiction, but the remainders share nothing and the enclosure
+/// is as blind as for the remainder above.
+#[test]
+fn a_parity_contradiction_spelled_two_ways_is_reported_not_found() -> anyhow::Result<()> {
+    let sources = &["floor(x) % 2 == 0 +/- 0.1", "floor(x + 1) % 2 == 0 +/- 0.1"];
     let system = system(&[("x", 0.0, 10.0)], sources)?;
     let unexpressed = assert_not_found(solver().solve(&system, &mut rng()));
     assert_eq!(unexpressed, sources);
@@ -315,18 +353,29 @@ fn a_floor_below_its_argument_spends_the_budget_and_is_not_found() -> anyhow::Re
     Ok(())
 }
 
-/// The product of two signs is both positive and negative. Away from the
-/// axes a sub-box has a definite sign on each coordinate and the enclosure
-/// empties it at once; *on* the axes `sgn([0, ε])` is `[-1, 1]`, the product
-/// straddles both targets, and the bisection descends toward the cross
-/// without end. So the verdict is a shrug at every budget — none at all,
-/// the default, sixteen times it — and never a point. Pinned at every
-/// budget because a proof here would take an inverse for `sgn`, which
-/// `interval` declines on purpose; the day it stops declining, this is the
-/// test that says so.
+/// The product of two signs is both positive and negative, required of one
+/// product: disjoint requirements on a shared subexpression, proved without
+/// an inverse for `sgn`.
+#[test]
+fn a_sign_contradiction_over_one_product_is_proved() -> anyhow::Result<()> {
+    let sources = &["sgn(x) * sgn(y) > 0.5", "sgn(x) * sgn(y) < -0.5"];
+    let system = system(&[("x", -5.0, 5.0), ("y", -5.0, 5.0)], sources)?;
+    assert_eq!(assert_proved(solver().solve(&system, &mut rng())), sources);
+    Ok(())
+}
+
+/// The same contradiction with one product negated, so the two share no
+/// product. Away from the axes a sub-box has a definite sign on each
+/// coordinate and the enclosure empties it at once; *on* the axes
+/// `sgn([0, ε])` is `[-1, 1]`, the product straddles both targets, and the
+/// bisection descends toward the cross without end. So the verdict is a
+/// shrug at every budget — none at all, the default, sixteen times it — and
+/// never a point. Pinned at every budget because a proof here would take an
+/// inverse for `sgn`, which `interval` declines on purpose; the day it stops
+/// declining, this is the test that says so.
 #[test]
 fn a_sign_contradiction_is_not_found_at_any_budget() -> anyhow::Result<()> {
-    let sources = &["sgn(x) * sgn(y) > 0.5", "sgn(x) * sgn(y) < -0.5"];
+    let sources = &["sgn(x) * sgn(y) > 0.5", "-sgn(x) * sgn(y) > 0.5"];
     let system = system(&[("x", -5.0, 5.0), ("y", -5.0, 5.0)], sources)?;
     for prune_budget in [0, 16, 256, 4096] {
         let verdict = solver()

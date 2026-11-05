@@ -484,12 +484,45 @@ fn a_backwards_comparison_is_blamed_together_with_what_it_contradicts() -> anyho
     Ok(())
 }
 
+/// Two half-planes a billionth apart, written over the same sum. Narrowing
+/// each variable alone crawls a billionth a visit and never empties, but the
+/// sum is one subexpression both constraints compute, and what each requires
+/// of it — at most 1, at least 1 + 1e-9 — has nothing in common. Commuted
+/// operands are the same subexpression, so `y + x` meets `x + y`.
+#[test]
+fn when_two_constraints_bound_one_sum_a_billionth_apart_should_prove_it_and_blame_both()
+-> anyhow::Result<()> {
+    // setup
+    let system = system(
+        vec![
+            InputVariable::new_continuous("x", -1.0, 1.0),
+            InputVariable::new_continuous("y", -1.0, 1.0),
+        ],
+        &["x + y <= 1", "y + x >= 1.000000001"],
+    )?;
+
+    // act
+    let verdict = ConstraintSolver::new()
+        .with_proposal_budget(common::PROPOSAL_BUDGET)
+        .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED));
+
+    // assert
+    let Err(Infeasibility::Proved { blamed }) = verdict else {
+        panic!("a contradiction over one shared sum should be proved, got {verdict:?}");
+    };
+    let mut sources: Vec<&str> = blamed.iter().map(|c| c.source.as_str()).collect();
+    sources.sort_unstable();
+    assert_eq!(sources, vec!["x + y <= 1", "y + x >= 1.000000001"]);
+    Ok(())
+}
+
 /// The boundary of what interval reasoning proves, stated so it is a
-/// documented limit rather than a discovered one. A *thin* contradiction —
-/// two half-planes a billionth apart — is one every box encloses a little
-/// of until bisection reaches that width, which is beyond any budget; the
-/// honest verdict is `NotFound`, and it names nothing, because every
-/// constraint narrowed *something* without it adding up to a proof.
+/// documented limit rather than a discovered one. A *thin* contradiction
+/// whose two sides share no subexpression — the same half-planes, one of
+/// them scaled — is one every box encloses a little of until bisection
+/// reaches a billionth's width, which is beyond any budget; the honest
+/// verdict is `NotFound`, and it names nothing, because every constraint
+/// narrowed *something* without it adding up to a proof.
 #[test]
 fn a_thin_contradiction_is_not_found_rather_than_proved() -> anyhow::Result<()> {
     let verdict = ConstraintSolver::new()
@@ -500,7 +533,7 @@ fn a_thin_contradiction_is_not_found_rather_than_proved() -> anyhow::Result<()> 
                     InputVariable::new_continuous("x", -1.0, 1.0),
                     InputVariable::new_continuous("y", -1.0, 1.0),
                 ],
-                &["x + y <= 1", "x + y >= 1.000000001"],
+                &["x + y <= 1", "2*x + 2*y >= 2.000000002"],
             )?,
             &mut Xoshiro256PlusPlus::seed_from_u64(SEED),
         );
@@ -742,7 +775,7 @@ fn sine_below_zero() -> anyhow::Result<()> {
 fn simple_arithmetic() -> anyhow::Result<()> {
     // Was `x2 == x1 + 1/2*x2 - x3/x4`, which is the same set written
     // circularly and is now refused at construction — see
-    // `SystemError::Cyclic`. Rearranged rather than dropped, so the
+    // `MalformedConstraintSystemError::Cyclic`. Rearranged rather than dropped, so the
     // fixture still exercises what it was ported for.
     let sources = &["1/2*x2 - x1 + x3 / x4 == 0 +/- 0.00001"];
     let system = system(

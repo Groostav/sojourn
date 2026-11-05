@@ -26,7 +26,7 @@
 use crate::{Ast, Schema};
 
 /// A coordinate of a point — a position in the bound [`Schema`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Row(pub(crate) usize);
 
 impl Row {

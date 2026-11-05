@@ -126,13 +126,22 @@ pub use solve::{
     DEFAULT_PRUNE_BUDGET, FarthestFirst, FeasibleRegion, GPU_VARIABLE, GpuTarget, Infeasibility,
     SampleError,
 };
-pub use system::{ConstraintRef, ConstraintSystem, Domain, InputVariable, Point, SystemError};
+pub use system::{
+    ConstraintRef, ConstraintSystem, Domain, DomainDefect, InputVariable,
+    MalformedConstraintSystemError, Point,
+};
 
 /// The `rand` this crate's `solve` and `sample` take their generator through,
 /// re-exported so a consumer on another `rand` need not match versions by
 /// hand: `sojourn::rand::rng()` for entropy,
 /// `sojourn::rand::rngs::Xoshiro256PlusPlus::seed_from_u64(..)` to reproduce.
 pub use rand;
+
+/// The `faer` whose matrices [`CompiledExpression::eval`], [`CompiledGradient::eval`]
+/// and [`Candidates`] take and return, re-exported for the same reason as
+/// [`rand`]: `sojourn::faer::Mat` is always the version this crate was built
+/// against, so a consumer on another `faer` builds its batches through this one.
+pub use faer;
 
 // Test plumbing: reachable, undocumented, unpromised. Each exists so that a
 // fixture in `tests/` can pin one strategy or measure one stage alone.

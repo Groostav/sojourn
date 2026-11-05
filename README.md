@@ -92,8 +92,8 @@ use sojourn::{ConstraintSystem, InputVariable};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = ConstraintSystem::new(
-        vec![InputVariable::new_continuous("x", 0.0, 1.0), InputVariable::new_continuous("y", 0.0, 1.0)],
-        ["x + y <= 1", "x + y >= 1.000000001"], // a contradiction a billionth thick
+        vec![InputVariable::new_continuous("x", -1.0, 1.0), InputVariable::new_continuous("y", -1.0, 1.0)],
+        ["x*x - 2*x*y + y*y < 0"], // (x - y)^2 < 0, though nothing here sees the square
     )?;
     let verdict = sojourn::solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(1)).unwrap_err();
     println!("{verdict}");
@@ -102,10 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Too thin for an interval enclosure to see, so the search spends its whole budget (a
-billion proposals by default, under two seconds in release) and returns
-`Infeasibility::NotFound`. That claims nothing: the region may be empty, or just too
-small to hit. Algebraic contradictions such as `x*x - 2*x*y + y*y < 0` end here too.
+Interval arithmetic evaluates the three terms separately, so the enclosure holds
+negative values on every box however small, and no split ever proves it empty. The
+search spends its whole budget (a billion proposals by default, under two seconds in
+release) and returns `Infeasibility::NotFound`. That claims nothing: the region may be
+empty, or just too small to hit. A contradiction too thin to sample ends here too,
+unless both sides share a subexpression: `x + y <= 1` against `x + y >= 1.000000001` is
+proved in microseconds, and `2*x + 2*y >= 2.000000002` in place of the second is not.
 `ConstraintSolver::with_proposal_budget` sets how long to keep trying.
 
 ## What else it does

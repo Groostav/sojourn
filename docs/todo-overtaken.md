@@ -257,6 +257,105 @@ with a line on why, so `todo.md` lists only what is live. Nothing here is a plan
       `Driven by:` nothing yet — this *is* test infrastructure.
       *Why moot:* No Z3, and the premise went too: `repair` lands in Euclidean distance over box-normalised coordinates, not taxicab, so an L1 judge would measure the wrong thing. The closed-form fixtures beside it are the judge.
 
+## Gone with Z3 and the emitter, and with the distribution benchmarks (moved 2026-11-01)
+
+Open in `todo.md` until 2026-11-01, whose premises left with the solver, the SMT emitter and
+`cvg_benchmarks`. Moved verbatim when the crate was readied to stabilise.
+
+- [ ] **Causalization — the matching third only.** The measurement says the
+      full Modelica pipeline is over-specified for what is left. Of the six:
+
+      | | constraints | needs |
+      |---|---|---|
+      | driven | `y == sin(x)`, `y > sin(theta)`, `y < sin(x*pi)`, `y > 1.1*sin(x*pi-0.5)` | bipartite matching |
+      | periodic set | `sin(x1) <= 0` | interval decomposition on a bounded domain |
+      | implicit | `x1 > sin(ln(cos(2.1^x1)))` | nothing; correctly reported |
+
+      **There are no strongly-connected components anywhere in the residue** —
+      so no BLT, no tearing, no Newton. Those exist to break algebraic loops and
+      there are none. Build the matching and stop.
+      **Caveat on all of this:** the corpus is sojourn-CVG's *test* fixtures, not
+      customer expressions. If real formulations contain implicit trigonometry —
+      `sin(x) == x/2` shapes — the SCC case returns and so does the tearing work.
+      Worth asking Garry before committing to skip it.
+      The wave-2 write-up of the trick itself is in `todo-overtaken.md` under "Duplicates".
+      *Why moot:* The residue it measured was what the SMT emitter could not translate, and the emitter and Z3 are gone. The matching it asked for was built anyway, for driving rather than for a solver: `classify::plans`' maximum bipartite matching (2026-09-16).
+
+- [ ] **A design of experiments over driven arguments.** Latin hypercube or
+      Sobol over the argument expression's variables. A correctness issue, not a
+      tuning one: pick one `x` and every point in the pool shares a `y`, which
+      is a constant rather than a sample.
+      The reasoning — why one `x` makes `y` a constant, not a sample — is in `todo-overtaken.md` under "Duplicates".
+      *Why moot:* The pool it would have fanned out was the solver's proposals, which are gone. A driven coordinate is now a Gibbs draw from its band (`classify::retract`), so points no longer share a `y`, and a design is `FeasibleRegion::sample`, farthest-first over a walked pool.
+
+- [x] **Repair a near-miss point instead of discarding it.** Done in its minimal
+      form: `ConstraintSystem::adjusted`, a bounded coordinate sweep run on a solver's seed.
+      It landed because it had to. Emitting `a == b +/- t` as two bounds rather
+      than `max(...) <= 0` changed which *edge* Z3 picks, and `cvg_pools::constants`
+      went red — Z3 answers with the boundary exactly, because a boundary is the
+      simplest solution there is, and `f64` then rounds it a hair outside. The
+      previous green was luck: the old encoding happened to make Z3 pick the edge
+      where the rounding went the other way.
+      What is still owed is the gradient version. This steps coordinate-wise by
+      ulps, which is right for a boundary witness and nothing else; it cannot
+      rescue a point that is genuinely infeasible, and a test pins that it does
+      not try.
+      *Why moot:* `ConstraintSystem::adjusted` and the Z3 boundary witness that made it necessary are both gone; repair is `FeasibleRegion::repair`.
+
+- [ ] **The gradient version of repair.** When the solver
+      nominates a point that babel's own `evaluate` then rejects, the pool bins
+      it — throwing away the expensive half of the work over a difference the
+      solver could not have seen, since it reasons in exact reals and we filter
+      in `f64`. Perturb toward feasibility instead. The residual is signed and
+      graded, so it says how badly and a finite-difference gradient says which
+      way; isotropic jitter is the wrong tool in high dimensions, for the same
+      concentration-of-measure reason the walker already has to work around.
+      Watch the distribution: repairing a *seed* is free, repairing an *emitted*
+      point skews the marginals, and `cvg_benchmarks` is what would catch it.
+      *Built, in another form:* `FeasibleRegion::repair` projects by Newton on the KKT system over the active set (`cvg/newton.rs`), with gradients from the tape's reverse sweep (`eval/differentiate.rs`), and COBYLA where there is no derivative. The premise, a solver nominating a point `f64` rejects, went with Z3.
+
+- [x] ~~**`take` should be `async`.**~~ Moot: `take`, the stream and the
+      worker are gone (2026-09-16, below). `solve` is synchronous and
+      `sample` is a design, not a stream.
+- [x] ~~**`impl Stream for FeasibleSamples`**~~, likewise.
+      *Why moot:* Already struck through in place on 2026-09-16; moved so `todo.md` lists only what is live.
+
+- [ ] **A pipeline to hang these on.** Causalization splits one problem in two
+      and the DOE turns one into `n`; both are `SolverProposal -> Vec<_>`, so a
+      `flat_map` chain is the shape. Deliberately not designed yet — the trigger
+      is the *second* fan-out pass.
+      *Why moot:* `SolverProposal` is gone, and both fan-out passes it was waiting for (causalization, the DOE over driven arguments) went with the solver.
+
+- [ ] **Capability metadata per backend.** The cheap half — `emit` taking a
+      capability set rather than an implicit one — when a second backend exists.
+      *Why moot:* `emit` is gone, and so is the second backend it was waiting for.
+
+- [ ] **`cvg_benchmarks::p118` is red on every seed.** Polytope mixing. Swept
+      across ten seeds it failed all ten, at a mean KS of 0.124 against
+      thresholds around 0.10 — so unlike `top_corner_200d` this is not a
+      threshold it grazes, it is consistently short.
+
+      Probed: fifteen dimensions, condition number 79.5, spectrum
+      `230.45 155.12 49.06 21.84 …` — **two long axes and thirteen short ones, a
+      sheet rather than a tube**, and two independent chains agree on that
+      covariance to 16%, so the shape is the body's and not chain history.
+      Rejection cannot reach it even at 400M proposals, so no unbiased reference
+      exists and `RunsAgree` is the only oracle available.
+
+      Interval propagation does **not** move it (mean KS 0.141 with, 0.124
+      without, t ≈ 1.25). The long axes are eigenvectors rather than
+      coordinates, so exact axis-aligned moves are still the wrong moves. What
+      this implicates is rotational preconditioning, and measuring that needs
+      the benchmark family below rather than this one sample.
+
+      The sharpest single number, from the ten-seed run: one seed reports
+      **a thousand points worth twenty-four independent ones — 2.4% efficiency**,
+      through `assert_efficient`, which had been computing it all along with
+      nowhere to report it. That is the autocorrelation the KS failures are
+      downstream of, and it is a better target to optimise against than KS is:
+      it needs one run rather than two, and it moves continuously.
+      *Why moot:* `cvg_benchmarks` was retired on 2026-09-16 (see "Gone with the distribution benchmarks"): a design is deliberately not uniform, so a KS verdict on walker output has no test to live in. Rotational preconditioning, which this implicated, landed 2026-09-11.
+
 ## Decided, and recorded as a decision
 
 - [x] **The rest of it — desugaring in the *AST* — is refused.**

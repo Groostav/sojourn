@@ -53,6 +53,12 @@ bench:
 brute:
     cargo nextest run --release --no-capture --no-fail-fast --features gpu --test brute_squad
 
+# Generated systems of thousands of constraints, through `solve`. Minutes, so
+# not part of `bench`; ignored in debug. See tests/scale_benchmarks.rs.
+[doc("Solve time on generated systems of up to 10,000 constraints, in release")]
+scale:
+    cargo nextest run --release --no-capture --no-fail-fast --test scale_benchmarks
+
 # Artemis pins sojourn by git tag, so a tag whose version disagrees with
 # Cargo.toml resolves fine and wastes an afternoon. The tag is `v<version>`,
 # optionally suffixed (`v0.1.3-artemis`); the tree must be clean so the tag

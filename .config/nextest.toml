@@ -26,3 +26,13 @@ leak-timeout = "500ms"
 [[profile.default.overrides]]
 filter = 'binary(brute_squad)'
 threads-required = 'num-cpus'
+
+# The scale fixtures are wall-clock measurements of solves that legitimately
+# take minutes at ten thousand constraints, and brute force in them spreads
+# over every core. Serialised for the same reason as the brute squad; the
+# watchdog is widened rather than removed, since every loop is still a count
+# and a run past half an hour is a hang, not a slow case.
+[[profile.default.overrides]]
+filter = 'binary(scale_benchmarks)'
+threads-required = 'num-cpus'
+slow-timeout = { period = "300s", terminate-after = 6 }

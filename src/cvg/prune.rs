@@ -25,8 +25,11 @@
 //!
 //! Interval arithmetic encloses; it does not decide. A contradiction it
 //! misses is one every box encloses a little of: a *thin* one, `x + y <= 1`
-//! against `x + y >= 1 + 1e-9`, that bisection reaches only at a width of
-//! `1e-9`; or an *algebraic* one, `x*x - 2*x*y + y*y < 0`, whose enclosure
+//! against `2*x + 2*y >= 2 + 2e-9`, that bisection reaches only at a width of
+//! `1e-9` — written over one shared sum, `x + y >= 1 + 1e-9`, it is seen,
+//! since a box narrows the subexpressions constraints share as well as its
+//! coordinates (`hc4::SharedTerms`); or an *algebraic* one,
+//! `x*x - 2*x*y + y*y < 0`, whose enclosure
 //! holds negatives on every box because the square is never seen as a square.
 //! Those end `Live` with the budget spent, and the search reports
 //! [`Infeasibility::NotFound`](crate::Infeasibility::NotFound) rather than
@@ -58,7 +61,7 @@ use std::collections::VecDeque;
 
 use super::classify;
 use super::hc4::Frames;
-use super::incidence::{ConstraintId, Row};
+use super::incidence::ConstraintId;
 use super::interval::Interval;
 use super::support::VariableSupport;
 use crate::ast::GlobalId;
@@ -105,14 +108,34 @@ pub(crate) struct Node {
     pub(crate) bounds: Bounds,
     /// Per row, the constraints that narrowed it, in the order they did.
     narrowed_by: Vec<Vec<ConstraintId>>,
+    /// Per shared subexpression ([`SharedTerms`](super::hc4::SharedTerms)),
+    /// what is required of it and by whom.
+    terms: Vec<NarrowedTerm>,
+}
+
+/// What the constraints visited so far require of one shared subexpression,
+/// and which of them did. The interval and its history in one value, where
+/// a coordinate's are split between `bounds` and `narrowed_by` because the
+/// box is what everything else reads.
+#[derive(Debug, Clone)]
+struct NarrowedTerm {
+    /// `ENTIRE` until a constraint says something the box did not already.
+    required: Interval,
+    /// The constraints that narrowed `required`, in the order they did.
+    narrowed_by: Vec<ConstraintId>,
 }
 
 impl Node {
     /// The declared box, narrowed by nothing yet.
     pub(crate) fn declared(problem: &ConstraintSystem) -> Self {
+        let unnarrowed = NarrowedTerm {
+            required: Interval::ENTIRE,
+            narrowed_by: Vec::new(),
+        };
         Self {
             bounds: problem.declared(),
             narrowed_by: vec![Vec::new(); problem.variables.len()],
+            terms: vec![unnarrowed; problem.shared.count()],
         }
     }
 
@@ -147,10 +170,16 @@ impl Node {
             .all(|(interval, value)| interval.contains(*value))
     }
 
-    /// Everything to blame for `culprit` emptying `row` here: the culprit,
-    /// what narrowed the row before it, what narrowed the rows *those* read,
-    /// and so on back to the declared box. Sorted, so the answer is a set.
-    fn blame(&self, problem: &ConstraintSystem, culprit: ConstraintId, row: Row) -> Vec<usize> {
+    /// Everything to blame for `culprit` emptying something here: the
+    /// culprit, `before` — what narrowed that row or shared term before it —
+    /// what narrowed the rows *those* read, and so on back to the declared
+    /// box. Sorted, so the answer is a set.
+    fn blame(
+        &self,
+        problem: &ConstraintSystem,
+        culprit: ConstraintId,
+        before: &[ConstraintId],
+    ) -> Vec<usize> {
         let mut blamed = vec![false; problem.constraints.len()];
         let mut pending: Vec<ConstraintId> = Vec::new();
         let mut accuse = |id: ConstraintId, pending: &mut Vec<ConstraintId>| {
@@ -161,7 +190,7 @@ impl Node {
         };
 
         accuse(culprit, &mut pending);
-        for id in &self.narrowed_by[row.index()] {
+        for id in before {
             accuse(*id, &mut pending);
         }
         while let Some(id) = pending.pop() {
@@ -239,7 +268,7 @@ pub(crate) fn contract(
             if after.is_empty() {
                 contributed[id.index()] = true;
                 return Contracted::Empty {
-                    blamed: node.blame(problem, id, *row),
+                    blamed: node.blame(problem, id, &node.narrowed_by[row.index()]),
                 };
             }
             // Less than `PROGRESS` of the declared width is no change at all:
@@ -266,6 +295,39 @@ pub(crate) fn contract(
                 if !queued[naming.index()] {
                     queued[naming.index()] = true;
                     queue.push_back(*naming);
+                }
+            }
+        }
+
+        // What this constraint requires of the subexpressions it shares with
+        // others, intersected with what they required: disjoint is a proof no
+        // coordinate's narrowing reaches. A term narrowing queues nothing —
+        // nothing reads a term's interval but this intersection, and every
+        // constraint is visited at least once, so whichever of two disjoint
+        // requirements comes second finds the other.
+        let held = problem.shared.of(id);
+        if !held.is_empty() {
+            let required =
+                problem.constraints[id.index()]
+                    .intervals
+                    .require(&globals, held, &mut frames);
+            for ((term, _), (can, must)) in held.iter().zip(required) {
+                let after = node.terms[*term].required.intersect(must);
+                if after.is_empty() {
+                    contributed[id.index()] = true;
+                    return Contracted::Empty {
+                        blamed: node.blame(problem, id, &node.terms[*term].narrowed_by),
+                    };
+                }
+                // Only a requirement narrower than the box already implies is
+                // news, so only that is kept and blamed: otherwise every
+                // constraint naming a shared term would be recorded as having
+                // said something on its first visit.
+                let narrowed = &mut node.terms[*term];
+                if must != can && after != narrowed.required {
+                    narrowed.required = after;
+                    narrowed.narrowed_by.push(id);
+                    contributed[id.index()] = true;
                 }
             }
         }
@@ -405,7 +467,10 @@ pub(crate) fn bisect(
                 }
                 violated += 1;
                 for row in rows {
-                    for index in leaf.node.blame(problem, id, *row) {
+                    for index in leaf
+                        .node
+                        .blame(problem, id, &leaf.node.narrowed_by[row.index()])
+                    {
                         blamed[index] = true;
                     }
                 }
@@ -663,6 +728,8 @@ mod tests {
     /// A contradiction contraction alone cannot see — the inverse of the
     /// square is a hull that straddles zero, so nothing narrows — and one
     /// case split can: on either side of zero the hull is a single interval.
+    /// The ring is scaled so the two share no sum; written over one,
+    /// `x^2 + y^2 >= 2`, the root contraction proves it without a split.
     #[test]
     fn a_disc_inside_a_ring_beyond_it_is_proved_by_splitting() {
         let system = system(
@@ -670,7 +737,7 @@ mod tests {
                 InputVariable::new_continuous("x", -1.5, 1.5),
                 InputVariable::new_continuous("y", -1.5, 1.5),
             ],
-            &["x^2 + y^2 <= 1", "x^2 + y^2 >= 2"],
+            &["x^2 + y^2 <= 1", "2*x^2 + 2*y^2 >= 4"],
         );
         let (root, _) = contracted(&system);
         assert!(matches!(root, Contracted::Live(_)), "{root:?}");
@@ -681,12 +748,44 @@ mod tests {
         assert_eq!(blamed, vec![0, 1]);
     }
 
+    /// A contradiction over a subexpression both constraints compute dies in
+    /// the root contraction: the sum's two requirements are disjoint, though
+    /// neither narrows `x` or `y` by more than a billionth; and `%`, which
+    /// encloses everything across its discontinuities and so narrows `x` not
+    /// at all, is bounded above and below by the constraints themselves.
+    #[test]
+    fn when_two_constraints_require_disjoint_values_of_a_shared_subexpression_should_empty_the_root()
+     {
+        for sources in [
+            &["x + y <= 1", "x + y >= 1.000000001"] as &[&str],
+            &["x % 3 >= 2", "x % 3 <= 1"],
+        ] {
+            // setup
+            let system = system(
+                vec![
+                    InputVariable::new_continuous("x", -1.0, 10.0),
+                    InputVariable::new_continuous("y", -1.0, 1.0),
+                ],
+                sources,
+            );
+
+            // act
+            let (root, _) = contracted(&system);
+
+            // assert
+            let Contracted::Empty { blamed } = root else {
+                panic!("{sources:?}: {root:?}");
+            };
+            assert_eq!(blamed, vec![0, 1], "{sources:?}");
+        }
+    }
+
     /// The two classes the module doc gives up on stay `Live` and exhaust
     /// the budget rather than claiming anything.
     #[test]
     fn a_thin_or_algebraic_contradiction_is_live_at_the_budget() {
         for sources in [
-            &["x + y <= 1", "x + y >= 1.000000001"] as &[&str],
+            &["x + y <= 1", "2*x + 2*y >= 2.000000002"] as &[&str],
             &["x*x - 2*x*y + y*y < 0"],
         ] {
             let system = system(

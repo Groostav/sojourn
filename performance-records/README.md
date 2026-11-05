@@ -172,6 +172,33 @@ while two hundred hold within a tenth of one. The test checks the measures on
 two hundred; the ledger's `random-cl2-ratio` is the first ten of them, for the
 like-for-like comparison with the design.
 
+## Scale ledgers
+
+`scale-<case>.csv`, written by `tests/scale_benchmarks.rs` on `just scale`:
+how long `ConstraintSystem::new`, `solve` and a ten-point `sample` take on
+generated systems of up to ten thousand constraints, and what `solve`
+concluded. The generators and why each case exists are in the test's module
+header.
+
+| file | vars | constraints | system |
+|---|---|---|---|
+| [`scale-corner-10k.csv`](scale-corner-10k.csv) | 200 | 10 000 | `top_corner_200d` plus 9 800 couplings `xi - xj < 0.25` |
+| [`scale-mutants-10k.csv`](scale-mutants-10k.csv) | 200 | 10 000 | mutated templates over windows of five variables, planted at one point |
+| [`scale-mutants-200-unplanted.csv`](scale-mutants-200-unplanted.csv) | 50 | 200 | the same, each mutant planted at a point of its own |
+
+Columns: `version;timestamp;host;vars;constraints;proposal-budget;compile-ms;solve-ms;outcome;sample-ms;points`
+
+**Milliseconds, so smaller is better**, unlike the throughput ledgers.
+`outcome` is `found`, `proved/<n>` or `not-found/<n>`, with `n` the number of
+constraints blamed or left unexpressed; `sample-ms` is blank when there was no
+region. Brute force runs at `proposal-budget` rather than the library's
+billion, since a proposal costs ten thousand evaluations here.
+
+**One run a row.** Everything is seeded, so a second run takes the same path
+through the ladder to the same outcome; what varies is the machine, by the
+same ~30% as everywhere else. A change of `outcome` is a finding on its own.
+A change of time is one only if it survives the method above.
+
 ## Brute-squad ledgers
 
 Written by `tests/brute_squad.rs` on `just brute` or `just bench`. One file per

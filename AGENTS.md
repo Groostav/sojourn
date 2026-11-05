@@ -57,6 +57,7 @@ just lint           fmt --check and clippy -D warnings, check-only; --all-target
 just bench          release-mode throughput, writes performance-records/*.csv
 just brute          time-to-first-hit rungs + checks/s, release, machine otherwise idle
 just quality        design quality on closed-form regions, ten seeds a case, release
+just scale          solve time on generated systems of up to 10,000 constraints, release
 just tag NAME       tag the commit as v<version>[-suffix], checked against Cargo.toml
 ```
 
@@ -512,10 +513,15 @@ and under upsert would overwrite a good row.
 
 **There is no SMT solver, and the limits of what replaced it are known.**
 Interval branch-and-prune proves what an enclosure can see: a plain
-contradiction, a disc that cannot meet its ring. It cannot prove a *thin*
-contradiction (`x + y <= 1` against `x + y >= 1 + 1e-9`) or an *algebraic* one
+contradiction, a disc that cannot meet its ring, and a thin one written over a
+subexpression both sides share (`x + y <= 1` against `x + y >= 1 + 1e-9`),
+since a box narrows shared subexpressions as well as coordinates
+(`hc4::SharedTerms`). It cannot prove a *thin* contradiction whose sides share
+nothing (`x + y <= 1` against `2*x + 2*y >= 2 + 2e-9`) or an *algebraic* one
 (`x*x - 2*x*y + y*y < 0`), and reports those `NotFound`; `tests/cvg_pools.rs`
-pins both. Z3 proved some of those and spun on others, could not be interrupted
+pins all three. Matching is structural and there is deliberately no
+simplification to a canonical polynomial form — the reason is on
+`hc4::SharedTerms`. Z3 proved some of those and spun on others, could not be interrupted
 reliably, and cost a C++ build; cvc5 and dReal were evaluated against it and
 rejected. The record is in todo.md under "The solver question, settled" and
 "Z3's fate". Do not re-shop for a solver without a new fact — a user story that

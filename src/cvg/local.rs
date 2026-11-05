@@ -119,6 +119,32 @@ pub(crate) const STARTS: usize = 4;
 /// rarely.
 const EVALS_PER_DIMENSION: u64 = 8;
 
+/// The largest problem a seed is sought on, in COBYLA's rows (the constraints
+/// and the box's `2d`) times the dimension squared — the shape of its model
+/// algebra, which is what a start costs once the system is large and the
+/// evaluations themselves are not.
+///
+/// The evaluation budget does not bound that: it counts evaluations, and the
+/// price of each grows with this product. Measured on 2026-11-04 with
+/// `tests/scale_benchmarks.rs`: ten thousand generated constraints over two
+/// hundred variables (`4.2e8`) spent 390 s a start, 0.24 s an evaluation, all
+/// four starts on the declared box landed nothing, and a start per
+/// bisection leaf would have run fourteen hours. The 100-segment stepped beam
+/// (`2.4e7`) lands at evaluation 24 in 150 ms. The limit is about twice the
+/// beam: every fixture that relies on a seed keeps it, and past the limit
+/// the rungs either side decide, the bisection and brute force, which are a
+/// count each at a cost that does not grow this way. A product of the
+/// problem's shape rather than a clock, so the verdict stays a function of
+/// the seed.
+const MODEL_ALGEBRA_LIMIT: u64 = 50_000_000;
+
+/// Whether a problem of `rows` constraint rows over `dimensions` coordinates
+/// is small enough to seed by a local solve: see [`MODEL_ALGEBRA_LIMIT`].
+fn within_model_algebra(rows: usize, dimensions: usize) -> bool {
+    let (rows, dimensions) = (rows as u64, dimensions as u64);
+    rows.saturating_mul(dimensions.saturating_mul(dimensions)) <= MODEL_ALGEBRA_LIMIT
+}
+
 /// The initial trust-region radius, in the unit cube: a quarter of the box on
 /// every coordinate, a coarse first step that the models then shrink.
 const INITIAL_RADIUS: f64 = 0.25;
@@ -178,6 +204,16 @@ pub(crate) fn find_initial(
 ) -> Option<Point> {
     let dimensions = problem.variables.len();
     if dimensions == 0 {
+        return None;
+    }
+    let rows = problem.constraints.len() + 2 * dimensions;
+    if !within_model_algebra(rows, dimensions) {
+        tracing::debug!(
+            rows,
+            dimensions,
+            limit = MODEL_ALGEBRA_LIMIT,
+            "too large to seed by a local solve"
+        );
         return None;
     }
 
@@ -573,6 +609,34 @@ mod tests {
 
     fn rng() -> Xoshiro256PlusPlus {
         Xoshiro256PlusPlus::seed_from_u64(0x0001_0CA1)
+    }
+
+    #[test]
+    fn when_the_problem_is_the_largest_stepped_beam_should_be_seeded() {
+        // setup: 100 segments, `b` and `h` each, 2n + 1 constraints and the
+        // box's 2d rows.
+        let (dimensions, constraints) = (200, 201);
+
+        // act
+        let within = within_model_algebra(constraints + 2 * dimensions, dimensions);
+
+        // assert
+        assert!(
+            within,
+            "the beam's seed is the fixture the limit was set by"
+        );
+    }
+
+    #[test]
+    fn when_ten_thousand_constraints_bind_two_hundred_variables_should_not_be_seeded() {
+        // setup: `tests/scale_benchmarks.rs`'s mutants, 390 s a start.
+        let (dimensions, constraints) = (200, 10_000);
+
+        // act
+        let within = within_model_algebra(constraints + 2 * dimensions, dimensions);
+
+        // assert
+        assert!(!within);
     }
 
     #[test]

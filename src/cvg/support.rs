@@ -1,7 +1,7 @@
 //! The values one coordinate may take: an interval, or a list of levels.
 //!
 //! Derived once per variable from its declared [`Domain`] by
-//! `ConstraintSystem::new`, which is where an ill-formed domain panics, and
+//! `ConstraintSystem::new`, which is where an ill-formed domain is refused, and
 //! the one implementation of level arithmetic in the crate: membership, the
 //! nearest level, rounding an interval inward onto levels, and splitting one
 //! between two adjacent levels. Everything that judges or draws a coordinate
@@ -54,7 +54,7 @@
 use std::ops::RangeInclusive;
 
 use crate::cvg::interval::Interval;
-use crate::{Domain, InputVariable};
+use crate::{Domain, DomainDefect, InputVariable};
 
 /// The support of one variable: the values its coordinate may take, as the
 /// engine computes with them. See the module header for the word and for
@@ -100,47 +100,42 @@ const EXACT_INTEGER: i128 = 1 << 53;
 impl VariableSupport {
     /// The support `variable` declares.
     ///
-    /// # Panics
+    /// # Errors
     /// If the declaration is ill-formed: bounds that are not finite or are
     /// the wrong way round, a step that is not positive and finite or does not
     /// land on the upper bound, a lattice too fine to hold exactly, or levels
-    /// that are empty, not finite or not strictly ascending. Each message names
-    /// the variable; these are the caller's to check, as
-    /// `ConstraintSystem::new` documents.
-    pub(crate) fn of(variable: &InputVariable) -> Self {
-        let name = &variable.name;
+    /// that are empty, not finite or not strictly ascending. The first defect
+    /// found, in that order; `ConstraintSystem::new` names the variable.
+    pub(crate) fn of(variable: &InputVariable) -> Result<Self, DomainDefect> {
         match &variable.domain {
             Domain::Continuous { lower, upper } => {
-                assert_bounds(name, *lower, *upper);
-                Self::Continuous {
+                check_bounds(*lower, *upper)?;
+                Ok(Self::Continuous {
                     lower: *lower,
                     upper: *upper,
-                }
+                })
             }
             Domain::Stepped { lower, step, upper } => {
-                assert_bounds(name, *lower, *upper);
-                Self::Discrete(lattice(name, *lower, *step, *upper))
+                check_bounds(*lower, *upper)?;
+                Ok(Self::Discrete(lattice(*lower, *step, *upper)?))
             }
             Domain::Levels(levels) => {
-                assert!(!levels.is_empty(), "variable {name:?} has no levels");
-                for level in levels {
-                    assert!(
-                        level.is_finite(),
-                        "variable {name:?} has a level {level}; levels must be finite"
-                    );
+                if levels.is_empty() {
+                    return Err(DomainDefect::NoLevels);
+                }
+                if let Some(level) = levels.iter().find(|level| !level.is_finite()) {
+                    return Err(DomainDefect::NonFiniteLevel { level: *level });
                 }
                 for pair in levels.windows(2) {
                     let [before, after] = [pair[0], pair[1]];
-                    assert!(
-                        before != after,
-                        "variable {name:?} lists the level {before} twice"
-                    );
-                    assert!(
-                        before < after,
-                        "variable {name:?} lists the level {after} after {before}; levels must be strictly ascending"
-                    );
+                    if before == after {
+                        return Err(DomainDefect::RepeatedLevel { level: before });
+                    }
+                    if before > after {
+                        return Err(DomainDefect::DescendingLevels { before, after });
+                    }
                 }
-                Self::Discrete(Levels::Listed(levels.clone()))
+                Ok(Self::Discrete(Levels::Listed(levels.clone())))
             }
         }
     }
@@ -385,24 +380,22 @@ impl Levels {
 }
 
 /// The bounds every domain shares a check for.
-fn assert_bounds(name: &str, lower: f64, upper: f64) {
-    assert!(
-        lower.is_finite() && upper.is_finite(),
-        "variable {name:?} ranges over [{lower}, {upper}]; bounds must be finite"
-    );
-    assert!(
-        lower <= upper,
-        "variable {name:?} has lower bound {lower} above its upper bound {upper}"
-    );
+fn check_bounds(lower: f64, upper: f64) -> Result<(), DomainDefect> {
+    if !(lower.is_finite() && upper.is_finite()) {
+        return Err(DomainDefect::NonFiniteBounds { lower, upper });
+    }
+    if lower > upper {
+        return Err(DomainDefect::InvertedBounds { lower, upper });
+    }
+    Ok(())
 }
 
 /// The lattice `lower, lower + step, …, upper`, held exactly as described in
 /// the module header.
-fn lattice(name: &str, lower: f64, step: f64, upper: f64) -> Levels {
-    assert!(
-        step.is_finite() && step > 0.0,
-        "variable {name:?} steps by {step}; a step must be positive and finite"
-    );
+fn lattice(lower: f64, step: f64, upper: f64) -> Result<Levels, DomainDefect> {
+    if !(step.is_finite() && step > 0.0) {
+        return Err(DomainDefect::NonPositiveStep { step });
+    }
     let parts = [decimal(lower), decimal(step), decimal(upper)];
     let exponent = parts
         .iter()
@@ -410,12 +403,7 @@ fn lattice(name: &str, lower: f64, step: f64, upper: f64) -> Levels {
         .map(|(_, exponent)| *exponent)
         .min()
         .expect("the step is positive, so not every part is zero");
-    let too_fine = || {
-        format!(
-            "variable {name:?} steps by {step} from {lower} to {upper}, which is too fine to \
-             index exactly in f64; declare its values with Domain::Levels instead"
-        )
-    };
+    let too_fine = DomainDefect::LatticeTooFine { lower, step, upper };
     let scaled = |(digits, own): (i64, i32)| -> Option<i128> {
         // Zero is zero at every power of ten, and its `own` is whatever `{:e}`
         // wrote: no claim on the common exponent, so none to scale by.
@@ -429,16 +417,16 @@ fn lattice(name: &str, lower: f64, step: f64, upper: f64) -> Levels {
     let (Some(first), Some(spacing), Some(last)) =
         (scaled(parts[0]), scaled(parts[1]), scaled(parts[2]))
     else {
-        panic!("{}", too_fine());
+        return Err(too_fine);
     };
-    assert!(exponent.abs() <= EXACT_POWER, "{}", too_fine());
-    assert!(
-        (last - first) % spacing == 0,
-        "variable {name:?} steps by {step} from {lower}, which never lands on its upper bound \
-         {upper}; declare its values with Domain::Levels if they are not evenly spaced"
-    );
+    if exponent.abs() > EXACT_POWER {
+        return Err(too_fine);
+    }
+    if (last - first) % spacing != 0 {
+        return Err(DomainDefect::StepMissesUpperBound { lower, step, upper });
+    }
     let power = 10_f64.powi(exponent.abs());
-    Levels::Lattice {
+    Ok(Levels::Lattice {
         first: i64::try_from(first).expect("below 2^53"),
         step: i64::try_from(spacing).expect("below 2^53"),
         count: usize::try_from((last - first) / spacing + 1).expect("below 2^53"),
@@ -447,7 +435,7 @@ fn lattice(name: &str, lower: f64, step: f64, upper: f64) -> Levels {
         } else {
             Scale::Multiply(power)
         },
-    }
+    })
 }
 
 /// `value` as `digits · 10^exponent`, from its shortest round-trip decimal:
@@ -472,7 +460,7 @@ mod tests {
     use super::*;
 
     fn discrete(domain: Domain) -> Levels {
-        match VariableSupport::of(&InputVariable::new("x", domain)) {
+        match VariableSupport::of(&InputVariable::new("x", domain)).expect("a well-formed domain") {
             VariableSupport::Discrete(levels) => levels,
             VariableSupport::Continuous { .. } => panic!("the fixture declares a discrete domain"),
         }
@@ -681,8 +669,10 @@ mod tests {
     #[test]
     fn a_snap_is_the_nearest_level_and_leaves_continuous_values_alone() {
         // setup
-        let tenths = VariableSupport::of(&InputVariable::new_discrete("t", 0.0, 0.1, 1.0));
-        let continuous = VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0));
+        let tenths = VariableSupport::of(&InputVariable::new_discrete("t", 0.0, 0.1, 1.0))
+            .expect("a well-formed domain");
+        let continuous = VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0))
+            .expect("a well-formed domain");
 
         // act, assert
         assert_eq!(tenths.snap(0.1 * 3.0).to_bits(), 0.3_f64.to_bits());
@@ -713,7 +703,8 @@ mod tests {
     #[test]
     fn a_continuous_support_is_its_bounds() {
         // setup
-        let support = VariableSupport::of(&InputVariable::new_continuous("x", -1.0, 2.0));
+        let support = VariableSupport::of(&InputVariable::new_continuous("x", -1.0, 2.0))
+            .expect("a well-formed domain");
 
         // act, assert
         assert!(support.contains(0.123));

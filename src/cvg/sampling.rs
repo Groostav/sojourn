@@ -480,8 +480,10 @@ mod tests {
         // setup
         let levels = vec![0.25, 0.5, 1.0, 2.0];
         let supports = [
-            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0)),
-            VariableSupport::of(&InputVariable::new("n", Domain::Levels(levels.clone()))),
+            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0))
+                .expect("a well-formed domain"),
+            VariableSupport::of(&InputVariable::new("n", Domain::Levels(levels.clone())))
+                .expect("a well-formed domain"),
         ];
         let mut candidates = Mat::zeros(2, 10_000);
 
@@ -511,9 +513,12 @@ mod tests {
     fn a_discrete_row_does_not_shift_the_draws_around_it() {
         // setup
         let mixed = [
-            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0)),
-            VariableSupport::of(&InputVariable::new_discrete("n", 0.0, 1.0, 9.0)),
-            VariableSupport::of(&InputVariable::new_continuous("y", -1.0, 1.0)),
+            VariableSupport::of(&InputVariable::new_continuous("x", 0.0, 1.0))
+                .expect("a well-formed domain"),
+            VariableSupport::of(&InputVariable::new_discrete("n", 0.0, 1.0, 9.0))
+                .expect("a well-formed domain"),
+            VariableSupport::of(&InputVariable::new_continuous("y", -1.0, 1.0))
+                .expect("a well-formed domain"),
         ];
         let mut with_levels = Mat::zeros(3, 100);
         let mut without = Mat::zeros(3, 100);

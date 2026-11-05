@@ -85,7 +85,7 @@ pub(crate) enum Shape {
     /// `x == sin(x)`, `x2 == x1 + x2/2 - x3/x4`, `x == x*x + 2`. A variable
     /// defined in terms of itself, so the equality is *implicit* in it: there is
     /// no rearrangement-free way to write `v = ...`. Refused by
-    /// [`SystemError::Implicit`](crate::SystemError::Implicit).
+    /// [`MalformedConstraintSystemError::Implicit`](crate::MalformedConstraintSystemError::Implicit).
     ///
     /// "Implicit" rather than "cyclic": a cycle is a mutual dependency *between*
     /// equations, which [`plans`] handles by driving neither. One equation that

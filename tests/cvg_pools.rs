@@ -737,6 +737,35 @@ fn when_an_implications_premise_is_forced_and_its_conclusion_impossible_should_p
     Ok(())
 }
 
+/// A root `and` is held as a constraint per term, so a proof blames the terms
+/// it needed, each named within the constraint the caller wrote.
+#[test]
+fn when_a_conjunction_contradicts_itself_should_blame_each_conjunct() -> anyhow::Result<()> {
+    // setup
+    let system = system(variables(&[("x", 0.0, 10.0)]), &["x > 2 and x < 1"])?;
+
+    // act
+    let solution = ConstraintSolver::new()
+        .with_proposal_budget(common::PROPOSAL_BUDGET)
+        .solve(&system, &mut Xoshiro256PlusPlus::seed_from_u64(SEED));
+
+    // assert
+    let Err(Infeasibility::Proved { blamed }) = solution else {
+        panic!("expected a proof, got {solution:?}");
+    };
+    let mut named: Vec<String> = blamed.iter().map(ToString::to_string).collect();
+    named.sort_unstable();
+    assert_eq!(
+        named,
+        [
+            r#""x < 1" in "x > 2 and x < 1""#,
+            r#""x > 2" in "x > 2 and x < 1""#
+        ]
+    );
+    assert!(blamed.iter().all(|constraint| constraint.index == 0));
+    Ok(())
+}
+
 #[test]
 fn logarithms() -> anyhow::Result<()> {
     // `2 < ln(x1)` is `x1 > e^2`, about 26% of the range. The JVM case has two

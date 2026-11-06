@@ -111,7 +111,9 @@ impl Expr {
                 premise,
                 conclusion,
             } => vec![premise, conclusion],
-            Kind::And { terms } | Kind::Fold { terms, .. } => terms.iter().collect(),
+            Kind::And { terms } | Kind::Or { terms } | Kind::Fold { terms, .. } => {
+                terms.iter().collect()
+            }
             Kind::Block(block) => block.expressions().collect(),
             Kind::Aggregate {
                 lower, upper, body, ..
@@ -238,17 +240,25 @@ pub enum Kind {
         rhs: Box<Expr>,
         tolerance: f64,
     },
-    /// Every term holding at once.
+    /// `a and b and c`: every term holding at once. One run of `and` is one
+    /// node, flat.
     ///
-    /// Not something the grammar produces — babel has no `and`. It exists
-    /// because [`crate::frontend::rewrite::invert_monotone`] needs a conjunction
-    /// for its domain guard: `ln(x) < 2` means `x < e^2` **and** `x > 0`.
-    ///
-    /// It used to build `max(residual_a, residual_b) <= 0` by hand, which meant
-    /// the front end knew the residual convention. A variant it can emit
-    /// without knowing costs a match arm in each backend and buys the
-    /// separation outright.
+    /// Older than the keyword: [`crate::frontend::rewrite::invert_monotone`]
+    /// needs a conjunction for its domain guard (`ln(x) < 2` means `x < e^2`
+    /// **and** `x > 0`). It used to build `max(residual_a, residual_b) <= 0` by
+    /// hand, which meant the front end knew the residual convention; a variant
+    /// it can emit without knowing costs a match arm in each backend and buys
+    /// the separation outright. At the root of a constraint in a system, one is
+    /// split into a constraint per term (`frontend::rewrite::conjuncts`).
     And {
+        terms: Vec<Expr>,
+    },
+    /// `a or b or c`: some term holding. One run of `or` is one node, flat.
+    ///
+    /// `eval::irgen` lowers it to an `Accumulate::Best` fold, the fold an
+    /// implication already was, and `cvg::classify` reads one at the root as
+    /// opaque: no arm of it determines anything on its own.
+    Or {
         terms: Vec<Expr>,
     },
     /// `premise implies conclusion`: true wherever the premise is false or
@@ -582,9 +592,11 @@ pub(crate) fn is_integral(expr: &Expr, env: &[bool]) -> bool {
         }
         Kind::Fold { terms, .. } => terms.iter().all(|term| is_integral(term, env)),
         Kind::Block(block) => block_is_integral(block, &mut env.to_vec()),
-        Kind::Compare { .. } | Kind::NearEq { .. } | Kind::And { .. } | Kind::Implies { .. } => {
-            false
-        }
+        Kind::Compare { .. }
+        | Kind::NearEq { .. }
+        | Kind::And { .. }
+        | Kind::Or { .. }
+        | Kind::Implies { .. } => false,
     }
 }
 
@@ -670,6 +682,7 @@ mod tests {
                 Kind::Compare { .. } => "compare",
                 Kind::NearEq { .. } => "near-eq",
                 Kind::And { .. } => "and",
+                Kind::Or { .. } => "or",
                 Kind::Implies { .. } => "implies",
             })
             .collect()
@@ -699,8 +712,8 @@ mod tests {
     /// Every kind a parse can leave in the tree, counted against the hand
     /// count, so a variant `children` forgot would show as a short walk. An
     /// aggregate never survives a parse (its bounds must be constant, so it
-    /// unrolls) and `And` is a rewrite's product, so those two are built by
-    /// hand and their children counted directly.
+    /// unrolls), so it is built by hand and its children counted directly, and
+    /// an `And` beside it the same way.
     #[test]
     fn every_kind_yields_its_children() {
         let source = "var a = x1 + var[floor(x2)]; abs(a) < x3 * 2 - a";
@@ -743,6 +756,9 @@ mod tests {
             at,
         );
         assert_eq!(and.children().len(), 3);
+        let or = crate::parse("x1 > 0 or x2 > 0 or x3 > 0").expect("parses");
+        // or[3 × compare[global, literal]] = 10
+        assert_eq!(or.program().body.iter_preorder().count(), 10);
         assert_eq!(Expr::new(Kind::Block(block()), at).children().len(), 2);
         let implies = crate::parse("x1 > 0 implies (x2 > 0 implies x1 < x2)").expect("parses");
         // implies[compare[global, literal], implies[compare[global, literal],

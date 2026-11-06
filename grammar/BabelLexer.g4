@@ -39,9 +39,11 @@ DYN_VAR       : 'var' ;
 
 LAMBDA        : '->' ;
 
-// Declared before VARIABLE, so `implies` lexes as the keyword on the tie and
-// `impliesX` still as a name, by longest match.
+// Declared before VARIABLE, so `implies`, `and` and `or` lex as keywords on the
+// tie and `impliesX`, `andy` and `order` still as names, by longest match.
 IMPLIES       : 'implies' ;
+AND           : 'and' ;
+OR            : 'or' ;
 
 LT            : '<' ;
 LTEQ          : '<=' ;

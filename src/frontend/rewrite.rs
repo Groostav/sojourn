@@ -133,6 +133,12 @@ fn fold_expr(expr: Expr) -> Result<Expr, Vec<Fault>> {
                 .map(fold_expr)
                 .collect::<Result<_, Vec<Fault>>>()?,
         },
+        Kind::Or { terms } => Kind::Or {
+            terms: terms
+                .into_iter()
+                .map(fold_expr)
+                .collect::<Result<_, Vec<Fault>>>()?,
+        },
         Kind::Implies {
             premise,
             conclusion,
@@ -271,7 +277,7 @@ fn check_expr(expr: &Expr, env: &mut Vec<bool>, faults: &mut Vec<Fault>) {
             check_expr(lhs, env, faults);
             check_expr(rhs, env, faults);
         }
-        Kind::And { terms } | Kind::Fold { terms, .. } => {
+        Kind::And { terms } | Kind::Or { terms } | Kind::Fold { terms, .. } => {
             for term in terms {
                 check_expr(term, env, faults);
             }
@@ -450,6 +456,12 @@ fn resolve_expr(expr: Expr, schema: &Schema, symbols: &mut Vec<String>) -> Resul
                 .map(|term| resolve_expr(term, schema, symbols))
                 .collect::<Result<_, _>>()?,
         },
+        Kind::Or { terms } => Kind::Or {
+            terms: terms
+                .into_iter()
+                .map(|term| resolve_expr(term, schema, symbols))
+                .collect::<Result<_, _>>()?,
+        },
         Kind::Implies {
             premise,
             conclusion,
@@ -490,6 +502,207 @@ pub(crate) fn holds_subscript(block: &Block) -> bool {
     block
         .iter_preorder()
         .any(|node| matches!(node.kind, Kind::DynamicIndex(_)))
+}
+
+/// A constraint whose root is an `and`, as one constraint per term; any other
+/// constraint as itself, alone.
+///
+/// Exact, because a system's constraints are a conjunction already, and worth
+/// doing because everything downstream reads a constraint by its root:
+/// `cvg::classify` drives a variable only from a root `NearEq`, so
+/// `x == y +/- 0.1 and z < 3` determined nothing while it was one constraint.
+/// Nested runs flatten, so `(a and b) and c` is three parts, and so is the
+/// domain guard [`invert_monotone`] wraps round a comparison.
+///
+/// **Each part keeps the whole source and the spans it had**, so a caret on
+/// a part — a bind problem, a runtime fault, a blamed conjunct's text — lands
+/// in the author's line where the author wrote it, with no table between.
+/// Each part gets its own symbols, renumbered in first-reference order, since
+/// the incidence graph, `hc4`'s positions and `classify` all read a
+/// constraint's symbols as the variables it names; and keeps only the
+/// assignments it reaches, since `classify` reads any block with an
+/// assignment as opaque and a dead `var` would stop the part driving.
+pub(crate) fn conjuncts(ast: Ast) -> Vec<Ast> {
+    if !matches!(ast.program.body.result.kind, Kind::And { .. }) {
+        return vec![ast];
+    }
+    assert!(ast.is_constraint, "an `and` is a boolean root");
+
+    let Ast {
+        source,
+        program: Program { body, frame_size },
+        symbols,
+        is_constraint,
+        ..
+    } = ast;
+    let Block {
+        assignments,
+        result,
+    } = body;
+
+    let mut terms = Vec::new();
+    flatten_conjunction(result, &mut terms);
+
+    terms
+        .into_iter()
+        .map(|term| {
+            // Live slots, from the term back through the assignments it reads.
+            let mut live = vec![false; frame_size as usize];
+            let mark = |expr: &Expr, live: &mut Vec<bool>| {
+                for node in expr.iter_preorder() {
+                    if let Kind::Local(slot) = node.kind {
+                        live[slot.index()] = true;
+                    }
+                }
+            };
+            mark(&term, &mut live);
+            let mut reached: Vec<&Assignment> = Vec::new();
+            for assignment in assignments.iter().rev() {
+                if live[assignment.slot.index()] {
+                    mark(&assignment.value, &mut live);
+                    reached.push(assignment);
+                }
+            }
+            reached.reverse();
+
+            // Renumbered in evaluation order: the assignments, then the term.
+            let mut named = Vec::new();
+            let assignments = reached
+                .into_iter()
+                .map(|assignment| Assignment {
+                    slot: assignment.slot,
+                    value: renumber(assignment.value.clone(), &symbols, &mut named),
+                    span: assignment.span,
+                })
+                .collect();
+            let result = renumber(term, &symbols, &mut named);
+            let body = Block {
+                assignments,
+                result,
+            };
+            Ast {
+                source: source.clone(),
+                contains_dynamic_lookup: holds_subscript(&body),
+                program: Program { body, frame_size },
+                symbols: named,
+                is_constraint,
+            }
+        })
+        .collect()
+}
+
+fn flatten_conjunction(expr: Expr, terms: &mut Vec<Expr>) {
+    match expr.kind {
+        Kind::And { terms: inner } => {
+            for term in inner {
+                flatten_conjunction(term, terms);
+            }
+        }
+        // Whatever is not a conjunction is a part as it stands; this pass
+        // cares about `And` alone, and every other root is one constraint.
+        _ => terms.push(expr),
+    }
+}
+
+/// `expr` with each `Global` re-pointed from `old` into `new`, which gains
+/// each name the first time it is read.
+fn renumber(expr: Expr, old: &[String], new: &mut Vec<String>) -> Expr {
+    let Expr { kind, span } = expr;
+    let each = |exprs: Vec<Expr>, new: &mut Vec<String>| -> Vec<Expr> {
+        exprs
+            .into_iter()
+            .map(|expr| renumber(expr, old, new))
+            .collect()
+    };
+    let kind = match kind {
+        Kind::Global(id) => {
+            let name = &old[id.index()];
+            let index = new.iter().position(|held| held == name).unwrap_or_else(|| {
+                new.push(name.clone());
+                new.len() - 1
+            });
+            Kind::Global(GlobalId::from_index(
+                u32::try_from(index).expect("fewer than four billion symbols"),
+            ))
+        }
+        leaf @ (Kind::Literal(_) | Kind::Local(_)) => leaf,
+        Kind::DynamicIndex(subscript) => {
+            Kind::DynamicIndex(Box::new(renumber(*subscript, old, new)))
+        }
+        Kind::Unary { op, arg } => Kind::Unary {
+            op,
+            arg: Box::new(renumber(*arg, old, new)),
+        },
+        Kind::Binary { op, lhs, rhs } => Kind::Binary {
+            op,
+            lhs: Box::new(renumber(*lhs, old, new)),
+            rhs: Box::new(renumber(*rhs, old, new)),
+        },
+        Kind::Compare { op, lhs, rhs } => Kind::Compare {
+            op,
+            lhs: Box::new(renumber(*lhs, old, new)),
+            rhs: Box::new(renumber(*rhs, old, new)),
+        },
+        Kind::NearEq {
+            lhs,
+            rhs,
+            tolerance,
+        } => Kind::NearEq {
+            lhs: Box::new(renumber(*lhs, old, new)),
+            rhs: Box::new(renumber(*rhs, old, new)),
+            tolerance,
+        },
+        Kind::And { terms } => Kind::And {
+            terms: each(terms, new),
+        },
+        Kind::Or { terms } => Kind::Or {
+            terms: each(terms, new),
+        },
+        Kind::Implies {
+            premise,
+            conclusion,
+        } => Kind::Implies {
+            premise: Box::new(renumber(*premise, old, new)),
+            conclusion: Box::new(renumber(*conclusion, old, new)),
+        },
+        Kind::Fold { kind, terms } => Kind::Fold {
+            kind,
+            terms: each(terms, new),
+        },
+        Kind::Block(block) => Kind::Block(Box::new(renumber_block(*block, old, new))),
+        Kind::Aggregate {
+            kind,
+            lower,
+            upper,
+            param,
+            body,
+        } => Kind::Aggregate {
+            kind,
+            lower: Box::new(renumber(*lower, old, new)),
+            upper: Box::new(renumber(*upper, old, new)),
+            param,
+            body: Box::new(renumber_block(*body, old, new)),
+        },
+    };
+    Expr { kind, span }
+}
+
+fn renumber_block(block: Block, old: &[String], new: &mut Vec<String>) -> Block {
+    let Block {
+        assignments,
+        result,
+    } = block;
+    Block {
+        assignments: assignments
+            .into_iter()
+            .map(|Assignment { slot, value, span }| Assignment {
+                slot,
+                value: renumber(value, old, new),
+                span,
+            })
+            .collect(),
+        result: renumber(result, old, new),
+    }
 }
 
 /// Rewrites `f(u) op c` into a comparison on `u`, for the strictly monotone `f`
@@ -561,6 +774,9 @@ fn invert_expr(node: Expr) -> Expr {
             tolerance,
         },
         Kind::And { terms } => Kind::And {
+            terms: terms.into_iter().map(invert_expr).collect(),
+        },
+        Kind::Or { terms } => Kind::Or {
             terms: terms.into_iter().map(invert_expr).collect(),
         },
         // Each side is a comparison, inverted like any other; a premise that
@@ -972,6 +1188,12 @@ fn unroll_expr(expr: Expr) -> Result<Expr, Vec<Fault>> {
                 .map(unroll_expr)
                 .collect::<Result<_, Vec<Fault>>>()?,
         },
+        Kind::Or { terms } => Kind::Or {
+            terms: terms
+                .into_iter()
+                .map(unroll_expr)
+                .collect::<Result<_, Vec<Fault>>>()?,
+        },
         Kind::Implies {
             premise,
             conclusion,
@@ -1118,6 +1340,12 @@ fn substitute(expr: Expr, param: LocalSlot, index: i64) -> Result<Expr, Vec<Faul
             tolerance,
         },
         Kind::And { terms } => Kind::And {
+            terms: terms
+                .into_iter()
+                .map(|term| substitute(term, param, index))
+                .collect::<Result<_, _>>()?,
+        },
+        Kind::Or { terms } => Kind::Or {
             terms: terms
                 .into_iter()
                 .map(|term| substitute(term, param, index))
@@ -1270,6 +1498,9 @@ fn collect_expr(expr: Expr) -> Expr {
             tolerance,
         },
         Kind::And { terms } => Kind::And {
+            terms: terms.into_iter().map(collect_expr).collect(),
+        },
+        Kind::Or { terms } => Kind::Or {
             terms: terms.into_iter().map(collect_expr).collect(),
         },
         Kind::Implies {
@@ -1492,6 +1723,12 @@ fn powers_expr(expr: Expr, frame_size: &mut u32) -> Expr {
             tolerance,
         },
         Kind::And { terms } => Kind::And {
+            terms: terms
+                .into_iter()
+                .map(|term| powers_expr(term, frame_size))
+                .collect(),
+        },
+        Kind::Or { terms } => Kind::Or {
             terms: terms
                 .into_iter()
                 .map(|term| powers_expr(term, frame_size))
@@ -2188,7 +2425,7 @@ mod tests {
         node.iter_preorder().any(|node| {
             matches!(
                 node.kind,
-                Kind::Compare { .. } | Kind::NearEq { .. } | Kind::And { .. }
+                Kind::Compare { .. } | Kind::NearEq { .. } | Kind::And { .. } | Kind::Or { .. }
             )
         })
     }

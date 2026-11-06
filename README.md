@@ -299,6 +299,7 @@ the dependency edges and leaves the scheduling to you;
 | arithmetic | `+` `-` `*` `/` `%` `^` |
 | comparisons | `<` `<=` `>` `>=`, and `a == b +/- 0.01`: equality always carries its tolerance |
 | implication | `x > y implies x * y < 20` holds wherever the premise fails or the conclusion holds. It binds looser than any comparison; nest it with brackets, `a implies (b implies c)`, since a bare chain is refused. A fault anywhere still fails the constraint, premise or not: guard the conclusion's own domain |
+| connectives | `x > 0 and y > 0`, `x < 1 or y < 1`. Both bind tighter than `implies` and looser than a comparison: `a and b implies c` is `(a and b) implies c`. Mixing `and` with `or` needs brackets, `(a and b) or c`; unbracketed it is refused. A constraint whose root is an `and` is held as one constraint per term, and a proof of infeasibility names the term it blames within the line you wrote |
 | functions | `sin` `cos` `tan` `cot` `asin` `acos` `atan` `sinh` `cosh` `tanh` `ln` `log` (base 10) `log(b, x)` `sqrt` `cbrt` `sqr` `cube` `abs` `sgn` `floor` `ceil` `max` `min` |
 | constants | `pi`, `e` |
 | aggregates | `sum(1, 20, i -> var[i]^2)`, `prod(...)`: the bounds are constants |

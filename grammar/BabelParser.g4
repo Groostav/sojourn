@@ -43,14 +43,29 @@ assignment
     : var name '=' scalarExpr
     ;
 
-// `p implies q`, binding looser than any comparison, so neither side needs
-// brackets. Right recursion rather than a left-recursive rule with an
+// `p implies q`, binding looser than any comparison and than `and`/`or`, so
+// neither side needs brackets: `a and b implies c` is `(a and b) implies c`. Right recursion rather than a left-recursive rule with an
 // `<assoc>`: the grammar admits `a implies b implies c` as `a implies (b
 // implies c)`, and `syntax::translate_boolean_expr` refuses that bare chain
 // with a caret (`ProblemKind::ChainedImplication`), where a bracketed one
 // arrives through `booleanPrimary` and passes.
 booleanExpr
-    : booleanPrimary (IMPLIES booleanExpr)?
+    : booleanJunction (IMPLIES booleanExpr)?
+    ;
+
+// `a and b and c`, `a or b or c`: one connective a run, binding tighter than
+// `implies` and looser than a comparison. The grammar admits a mixed run and
+// `syntax::translate_boolean_junction` refuses it at the first connective that
+// changes (`ProblemKind::MixedConnectives`), as Dafny does; a bracketed run is
+// a `booleanPrimary` and passes. `junctor` is a rule of its own so the
+// connectives come back in order.
+booleanJunction
+    : booleanPrimary (junctor booleanPrimary)*
+    ;
+
+junctor
+    : AND
+    | OR
     ;
 
 booleanPrimary

@@ -238,6 +238,7 @@ mod tests {
         "var[ceil(x2 * 2)] > 0.5",
         "x1 == pi +/- 0.001",
         "x1 == x2 +/- 0.5 implies (x3 > 0 implies x1 < x3)",
+        "(x1 < 1 or x2 > 2) and x3 > 0 implies x1 < x3 or x2 == x3 +/- 0.5",
         "sum(1, 3, i -> var[i] * var[i]) < 1.5",
         "tanh(x3) - sinh(x1) + cosh(x2) < 0.5",
         "abs(floor(x1) - ceil(x2)) < 2",

@@ -217,6 +217,7 @@ impl Emitter<'_> {
                 self.fold(Accumulate::from_aggregate(*kind), terms, dst, span)
             }
             Kind::And { terms } => self.fold(Accumulate::Worst, terms, dst, span),
+            Kind::Or { terms } => self.fold(Accumulate::Best, terms, dst, span),
             // `min(not premise, conclusion)`: true where the premise fails or
             // the conclusion holds. The premise is negated by `negated`, which
             // complements comparisons rather than negating a residual.
@@ -354,9 +355,18 @@ impl Emitter<'_> {
                 );
                 dst
             }
-            // `invert_monotone`'s domain guard in a premise: some term fails.
+            // An `and` in a premise, written or `invert_monotone`'s domain
+            // guard: some term fails.
             Kind::And { terms } => self.chain(
                 Accumulate::Best,
+                terms.len(),
+                |this, k| this.negated(&terms[k]),
+                None,
+                span,
+            ),
+            // An `or` in a premise: every term fails.
+            Kind::Or { terms } => self.chain(
+                Accumulate::Worst,
                 terms.len(),
                 |this, k| this.negated(&terms[k]),
                 None,
@@ -703,6 +713,56 @@ mod tests {
                 .iter()
                 .any(|insn| matches!(insn, Instruction::Unary { .. })),
             "nothing is negated"
+        );
+    }
+
+    /// De Morgan through `or`: `not (p or q)` is `not p and not q`, each
+    /// comparison complemented and folded by `Worst` from its identity.
+    #[test]
+    fn when_lowering_an_or_premise_should_complement_each_term_under_a_conjunction() {
+        // act
+        let tape = tape_for("x1 > 0 or x2 > 0 implies x1 < 1", &["x1", "x2"]);
+
+        // assert
+        let ops: Vec<_> = tape
+            .insns
+            .iter()
+            .filter(|insn| !matches!(insn, Instruction::Load { .. }))
+            .collect();
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [
+                    Instruction::Compare {
+                        op: crate::ast::CompareOp::Lte,
+                        ..
+                    },
+                    Instruction::Combine {
+                        how: Accumulate::Worst,
+                        last: false,
+                        ..
+                    },
+                    Instruction::Compare {
+                        op: crate::ast::CompareOp::Lte,
+                        ..
+                    },
+                    Instruction::Combine {
+                        how: Accumulate::Worst,
+                        last: true,
+                        ..
+                    },
+                    Instruction::Compare {
+                        op: crate::ast::CompareOp::Lt,
+                        ..
+                    },
+                    Instruction::Combine {
+                        how: Accumulate::Best,
+                        last: true,
+                        ..
+                    },
+                ]
+            ),
+            "{ops:?}"
         );
     }
 

@@ -195,6 +195,15 @@ pub enum ProblemKind {
     /// Brackets on either side say which, and both readings compile.
     ChainedImplication,
 
+    /// `a and b or c`, `and` and `or` in one run without brackets. Located at
+    /// the first connective that differs from the one before it.
+    ///
+    /// Refused rather than given a precedence, as Dafny refuses it: `and`
+    /// binding tighter is the logician's convention and not every reader's,
+    /// and the two readings differ wherever `a` is false and `c` true.
+    /// Brackets say which, and both compile.
+    MixedConnectives,
+
     /// A subexpression evaluated to NaN or an infinity for this row.
     ///
     /// The same rule as [`ProblemKind::NonFiniteConstant`], for the values that
@@ -286,6 +295,7 @@ impl ProblemKind {
                 }
             }
             Self::ChainedImplication => "chained `implies` is ambiguous".to_owned(),
+            Self::MixedConnectives => "`and` and `or` together are ambiguous".to_owned(),
             Self::NonFiniteValue { value } => {
                 let what = if value.is_nan() {
                     "not a number"
@@ -333,6 +343,9 @@ impl ProblemKind {
             Self::ChainedImplication => {
                 "bracket one side: `a implies (b implies c)` or `(a implies b) implies c`"
                     .to_owned()
+            }
+            Self::MixedConnectives => {
+                "bracket one side: `(a and b) or c` or `a and (b or c)`".to_owned()
             }
             Self::IllegalAggregateBound { value, .. }
             | Self::DynamicIndexNotAnInteger { value }

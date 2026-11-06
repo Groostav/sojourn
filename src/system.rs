@@ -27,7 +27,7 @@ use crate::cvg::classify;
 use crate::cvg::hc4::{self, IntervalTape};
 use crate::cvg::incidence::{ConstraintId, Incidence, Row};
 use crate::cvg::support::VariableSupport;
-use crate::diagnostics::CompilationFailure;
+use crate::diagnostics::{CompilationFailure, Span};
 use crate::eval::Gradient;
 use crate::{Ast, CompiledExpression, Schema};
 
@@ -149,11 +149,37 @@ pub struct ConstraintRef {
     pub index: usize,
     /// The constraint as it was written.
     pub source: String,
+    /// The conjunct meant, as written, when the constraint is an `and` and
+    /// one of its terms is: `Some("z < 3")` of `x == y +/- 0.1 and z < 3`.
+    /// A system holds each term of a root `and` as a constraint of its own,
+    /// and says which one it means. `None` when the whole constraint is.
+    pub part: Option<String>,
+}
+
+impl ConstraintRef {
+    /// The constraint at `index`, and the conjunct at `part` of it if one.
+    fn of(index: usize, source: &str, part: Option<Span>) -> Self {
+        let part = part.map(|span| {
+            source
+                .chars()
+                .skip(span.start as usize)
+                .take(span.end.saturating_sub(span.start) as usize)
+                .collect()
+        });
+        Self {
+            index,
+            source: source.to_owned(),
+            part,
+        }
+    }
 }
 
 impl std::fmt::Display for ConstraintRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.source)
+        match &self.part {
+            Some(part) => write!(f, "{part:?} in {:?}", self.source),
+            None => write!(f, "{:?}", self.source),
+        }
     }
 }
 
@@ -168,6 +194,13 @@ impl std::fmt::Display for ConstraintRef {
 /// tape is the same tape over intervals, what every slice and contraction runs.
 #[derive(Debug, Clone)]
 pub(crate) struct Constraint {
+    /// Which of the caller's constraints this is, or is a conjunct of: its
+    /// position in the list given to [`ConstraintSystem::new`].
+    pub(crate) origin: usize,
+    /// Where in that constraint's text this conjunct is, when the
+    /// constraint was an `and` split into one constraint per term
+    /// ([`conjuncts`](crate::frontend::rewrite::conjuncts)).
+    pub(crate) part: Option<Span>,
     pub(crate) written: Ast,
     pub(crate) compiled: CompiledExpression,
     pub(crate) intervals: IntervalTape,
@@ -242,6 +275,9 @@ impl Constraint {
 #[derive(Debug, Clone)]
 pub struct ConstraintSystem {
     pub(crate) variables: Vec<InputVariable>,
+    /// The constraints as the caller wrote them, in their order. Not one per
+    /// entry of `constraints`, which holds each term of a root `and` apart.
+    pub(crate) authored: Vec<String>,
     /// Each variable's *support* — the set of values it may take, the
     /// probabilist's word (see `cvg::support`) — derived from its domain and
     /// validated once, in the same order: what every judgement and draw
@@ -454,14 +490,13 @@ impl ConstraintSystem {
         }
         let schema = Schema::new(variables.iter().map(|input| input.name.clone()));
 
+        let mut authored = Vec::new();
         let mut resolved = Vec::new();
         let mut compiled = Vec::new();
+        let mut origins: Vec<(usize, Option<Span>)> = Vec::new();
         for (index, source) in constraints.into_iter().enumerate() {
             let source: String = source.into();
-            let named = ConstraintRef {
-                index,
-                source: source.clone(),
-            };
+            let named = ConstraintRef::of(index, &source, None);
             let constraint = crate::parse(&source).map_err(|failure| {
                 MalformedConstraintSystemError::Unparsable {
                     constraint: named.clone(),
@@ -485,7 +520,10 @@ impl ConstraintSystem {
 
             // Compiling is the binding check, and the tape it produces is the
             // one every strategy evaluates, so it is kept rather than redone.
-            let tape = match crate::eval::bind(&constraint, &schema, Gradient::BestEffort) {
+            // The whole constraint binds before any `and` in it is split, so
+            // an unbound name is reported once, with every caret, against the
+            // text the author wrote.
+            let whole = match crate::eval::bind(&constraint, &schema, Gradient::BestEffort) {
                 Ok(tape) => tape,
                 Err(failure) => {
                     return Err(MalformedConstraintSystemError::Unbound {
@@ -495,30 +533,55 @@ impl ConstraintSystem {
                 }
             };
 
-            // Last, because "you named a variable that does not exist" is a
-            // better message than anything about shape when both are true of
-            // the same constraint.
-            if let classify::Shape::Implicit { variable } = classify::shape(&constraint) {
-                return Err(MalformedConstraintSystemError::Implicit {
-                    constraint: named,
-                    variable: constraint.symbols()[variable.index()].clone(),
-                });
-            }
+            // A root `and` is a constraint per term from here on. Each part
+            // keeps the author's text and spans, so what is said about a part
+            // below names it within that text.
+            let root = constraint.program().body.result.span;
+            let parts = crate::frontend::rewrite::conjuncts(constraint);
+            let split = parts.len() > 1;
+            let mut whole = Some(whole);
+            for constraint in parts {
+                let at = constraint.program().body.result.span;
+                let part = (split && at != root).then_some(at);
+                let named = ConstraintRef::of(index, &source, part);
+                let tape = if split {
+                    crate::eval::bind(&constraint, &schema, Gradient::BestEffort)
+                        .expect("the whole constraint bound, so each of its conjuncts does")
+                } else {
+                    whole
+                        .take()
+                        .expect("a constraint that is not split is one part")
+                };
 
-            // A constraint that names no variable reads nothing of the point,
-            // so one evaluation, anywhere, decides it everywhere — by the
-            // oracle's own reading, a fault being a failure.
-            if constraint.symbols().is_empty() && !constraint.contains_dynamic_lookup() {
-                let anywhere: Vec<f64> = supports.iter().map(VariableSupport::lower).collect();
-                if !tape
-                    .eval_row(&anywhere)
-                    .is_ok_and(|residual| residual <= 0.0)
-                {
-                    return Err(MalformedConstraintSystemError::NeverHolds { constraint: named });
+                // Last, because "you named a variable that does not exist" is a
+                // better message than anything about shape when both are true of
+                // the same constraint.
+                if let classify::Shape::Implicit { variable } = classify::shape(&constraint) {
+                    return Err(MalformedConstraintSystemError::Implicit {
+                        constraint: named,
+                        variable: constraint.symbols()[variable.index()].clone(),
+                    });
                 }
+
+                // A constraint that names no variable reads nothing of the
+                // point, so one evaluation, anywhere, decides it everywhere —
+                // by the oracle's own reading, a fault being a failure.
+                if constraint.symbols().is_empty() && !constraint.contains_dynamic_lookup() {
+                    let anywhere: Vec<f64> = supports.iter().map(VariableSupport::lower).collect();
+                    if !tape
+                        .eval_row(&anywhere)
+                        .is_ok_and(|residual| residual <= 0.0)
+                    {
+                        return Err(MalformedConstraintSystemError::NeverHolds {
+                            constraint: named,
+                        });
+                    }
+                }
+                resolved.push(constraint);
+                compiled.push(tape);
+                origins.push((index, part));
             }
-            resolved.push(constraint);
-            compiled.push(tape);
+            authored.push(source);
         }
 
         let plans = classify::plans(&resolved, &schema, &supports);
@@ -550,7 +613,10 @@ impl ConstraintSystem {
         let constraints: Vec<Constraint> = resolved
             .into_iter()
             .zip(compiled)
-            .map(|(written, compiled)| Constraint {
+            .zip(origins)
+            .map(|((written, compiled), (origin, part))| Constraint {
+                origin,
+                part,
                 intervals: hc4::compile(&written),
                 written,
                 compiled,
@@ -569,6 +635,7 @@ impl ConstraintSystem {
         let shared = hc4::shared(&tapes);
 
         Ok(Self {
+            authored,
             variables,
             supports,
             constraints,
@@ -627,9 +694,7 @@ impl ConstraintSystem {
 
     /// The constraints as written, in the order they were given.
     pub fn constraints(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.constraints
-            .iter()
-            .map(|constraint| constraint.written.source())
+        self.authored.iter().map(String::as_str)
     }
 
     /// Whether a point is inside the box and satisfies every constraint, with
@@ -820,10 +885,12 @@ impl ConstraintSystem {
 
     /// The constraint at `index`, as a caller reads it.
     pub(crate) fn named(&self, index: usize) -> ConstraintRef {
-        ConstraintRef {
-            index,
-            source: self.constraints[index].written.source().to_owned(),
-        }
+        let constraint = &self.constraints[index];
+        ConstraintRef::of(
+            constraint.origin,
+            constraint.written.source(),
+            constraint.part,
+        )
     }
 }
 
@@ -948,6 +1015,164 @@ pub(crate) mod tests {
         // assert
         assert!(system.is_feasible(&[0.5], 0.0));
         assert!(!system.is_feasible(&[-0.5], 0.0));
+    }
+
+    fn xyz() -> Vec<InputVariable> {
+        ["x", "y", "z"]
+            .into_iter()
+            .map(|name| InputVariable::new_continuous(name, -5.0, 5.0))
+            .collect()
+    }
+
+    /// A root `and` is a constraint per term, each naming only its own
+    /// variables; the caller still sees the one constraint they wrote, and a
+    /// relaxation built from it does not split it twice.
+    #[test]
+    fn when_a_constraint_is_a_root_and_should_hold_each_term_apart() {
+        // act
+        let system = system(xyz(), &["x > 0 and x < 1 and (y < 2 and z > x)"]);
+
+        // assert
+        assert_eq!(system.constraints.len(), 4);
+        assert_eq!(
+            system.constraints().collect::<Vec<_>>(),
+            ["x > 0 and x < 1 and (y < 2 and z > x)"]
+        );
+        let named: Vec<Vec<usize>> = (0..4)
+            .map(|position| {
+                system
+                    .incidence
+                    .rows_of(ConstraintId(position))
+                    .iter()
+                    .map(|row| row.index())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(named, [vec![0], vec![0], vec![1], vec![2, 0]]);
+        let parts: Vec<_> = (0..4).map(|position| system.named(position)).collect();
+        assert!(parts.iter().all(|part| part.index == 0));
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.part.as_deref().expect("each is a conjunct"))
+                .collect::<Vec<_>>(),
+            ["x > 0", "x < 1", "y < 2", "z > x"]
+        );
+        assert_eq!(system.relaxed().constraints.len(), 4);
+        assert!(system.is_feasible(&[0.5, 0.0, 1.0], 0.0));
+        assert!(!system.is_feasible(&[0.5, 3.0, 1.0], 0.0));
+    }
+
+    /// A part keeps the assignments it reads and no others: a dead `var` would
+    /// make the part an opaque block and stop its equality driving.
+    #[test]
+    fn when_a_conjunct_reads_no_assignment_should_drop_it_and_drive() {
+        // act
+        let system = system(xyz(), &["var s = x + y; s < 3 and z == y +/- 0.1"]);
+
+        // assert
+        assert_eq!(system.constraints.len(), 2);
+        assert_eq!(
+            system.constraints[0]
+                .written
+                .program()
+                .body
+                .assignments
+                .len(),
+            1
+        );
+        assert!(
+            system.constraints[1]
+                .written
+                .program()
+                .body
+                .assignments
+                .is_empty()
+        );
+        assert!(
+            system.plans.iter().any(|plan| !plan.driven().is_empty()),
+            "the equality drives once it is a constraint of its own"
+        );
+    }
+
+    /// The red case before the split: an equality beside an inequality in one
+    /// `and` determined nothing.
+    #[test]
+    fn when_an_equality_is_a_conjunct_should_drive_a_variable() {
+        // act
+        let system = system(xyz(), &["x == y +/- 0.1 and z < 3"]);
+
+        // assert
+        assert!(
+            system.plans.iter().any(|plan| !plan.driven().is_empty()),
+            "{:?}",
+            system.plans
+        );
+    }
+
+    /// What is wrong with one conjunct names that conjunct; what is wrong
+    /// with the whole is said once, against the whole.
+    #[test]
+    fn when_a_conjunct_is_refused_should_name_it_within_the_constraint() {
+        // act
+        let never = ConstraintSystem::new(xyz(), ["x > 0 and 1 > 2"]).expect_err("never");
+        let implicit =
+            ConstraintSystem::new(xyz(), ["y < 1 and x == x / 2 + z +/- 0.1"]).expect_err("x");
+        let unbound = ConstraintSystem::new(xyz(), ["q > 0 and x < q"]).expect_err("q");
+
+        // assert
+        let MalformedConstraintSystemError::NeverHolds { constraint } = never else {
+            panic!("expected NeverHolds, got {never:?}");
+        };
+        assert_eq!(constraint.part.as_deref(), Some("1 > 2"));
+        assert_eq!(constraint.to_string(), r#""1 > 2" in "x > 0 and 1 > 2""#);
+
+        let MalformedConstraintSystemError::Implicit {
+            constraint,
+            variable,
+        } = implicit
+        else {
+            panic!("expected Implicit, got {implicit:?}");
+        };
+        assert_eq!(variable, "x");
+        assert_eq!(constraint.part.as_deref(), Some("x == x / 2 + z +/- 0.1"));
+
+        let MalformedConstraintSystemError::Unbound {
+            constraint,
+            failure,
+        } = unbound
+        else {
+            panic!("expected Unbound, got {unbound:?}");
+        };
+        assert_eq!(constraint.part, None, "binding is checked on the whole");
+        assert_eq!(failure.source, "q > 0 and x < q");
+        assert!(
+            failure
+                .problems
+                .iter()
+                .any(|problem| problem.span == Span::new(0, 1)),
+            "{:?}",
+            failure.problems
+        );
+    }
+
+    /// `ln(x) < 1` is `x < e and x > 0` once inverted: split like any `and`,
+    /// but both terms carry the comparison's span, so neither is a part of
+    /// the text and the caller sees the constraint they wrote.
+    #[test]
+    fn when_an_inverted_guard_is_split_should_name_the_whole_constraint() {
+        // act
+        let system = system(xyz(), &["ln(x) < 1"]);
+
+        // assert
+        assert_eq!(
+            system.constraints.len(),
+            2,
+            "the bound and the domain's floor"
+        );
+        assert!(
+            (0..system.constraints.len()).all(|position| system.named(position).part.is_none())
+        );
     }
 
     fn one_variable(source: &str) -> ConstraintSystem {

@@ -136,6 +136,59 @@ fn an_implication_is_not_a_scalar() {
     }
 }
 
+/// `a and b or c` has two readings and no convention every reader shares, so
+/// it is refused at the connective that changes, as Dafny refuses it; see
+/// [`ProblemKind::MixedConnectives`]. Brackets either way compile.
+#[test]
+fn when_and_and_or_are_mixed_without_brackets_should_refuse_at_the_change() {
+    for (source, span) in [
+        ("x > 0 and y > 0 or z > 0", Span::new(16, 18)),
+        ("x > 0 or y > 0 or z > 0 and x < 1", Span::new(24, 27)),
+    ] {
+        // act
+        let failure = sojourn::compile(source, &["x", "y", "z"]).expect_err("mixed connectives");
+
+        // assert
+        assert!(
+            failure
+                .problems
+                .iter()
+                .any(|p| p.kind == ProblemKind::MixedConnectives && p.span == span),
+            "{source:?}: {:#?}",
+            failure.problems
+        );
+    }
+}
+
+#[test]
+fn when_mixed_connectives_are_bracketed_should_compile() {
+    for source in [
+        "(x > 0 and y > 0) or z > 0",
+        "x > 0 and (y > 0 or z > 0)",
+        "x > 0 and y > 0 and z > 0",
+        "x > 0 or y > 0 or z > 0",
+        "x > 0 and y > 0 implies z > 0 or x < 1",
+    ] {
+        sojourn::compile(source, &["x", "y", "z"])
+            .unwrap_or_else(|e| panic!("{source:?} should compile: {e:#}"));
+    }
+}
+
+/// A conjunction is a boolean like any comparison: not inside arithmetic,
+/// not inside a lambda's body, and not missing an operand.
+#[test]
+fn when_a_connective_is_used_as_a_scalar_or_dangles_should_not_parse() {
+    for (source, span, column) in [
+        ("1 + (x > 0 and x < 1)", Span::new(7, 8), 7),
+        ("sum(1, 3, i -> i > 0 or i < 2)", Span::new(17, 18), 17),
+    ] {
+        assert_reports(source, &format!("a syntax error at {span:?}"), |p| {
+            matches!(p.kind, ProblemKind::Syntax { .. }) && p.span == span && p.column_idx == column
+        });
+    }
+    assert_syntax_at("x > 0 and", Span::new(9, 9), 9, false);
+}
+
 #[test]
 fn an_implication_missing_its_conclusion_does_not_parse() {
     assert_syntax_at("x > 0 implies", Span::new(13, 13), 13, false);

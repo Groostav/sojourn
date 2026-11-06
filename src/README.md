@@ -146,8 +146,8 @@ every pass a composable `Program -> Program`, which is what makes the rewriter
 pluggable. A separate post-rewrite type would make every pass change types, and
 each new pass would need converting on both sides.
 
-`Kind::Compare`, `Kind::NearEq` and `Kind::And` reach both backends intact, and
-each lowers them its own way.
+`Kind::Compare`, `Kind::NearEq`, `Kind::And`, `Kind::Or` and `Kind::Implies`
+reach both backends intact, and each lowers them its own way.
 
 The tree's shape is written once, in `Expr::children`, exhaustively; a new
 `Kind` goes there or no traversal sees it. `Expr::iter_preorder` walks it —
@@ -180,7 +180,9 @@ with the pass that caused them.
 for its domain guard — `ln(x) < 2` means `x < e²` **and** `x > 0` — and used to
 build `max(residual, residual) <= 0` by hand, which is the residual convention
 leaking into the front end. A variant it can emit without knowing costs one arm
-per backend.
+per backend. The grammar has produced it since 0.5.0 too, for a written `and`,
+beside `Kind::Or`; at the root of a constraint in a system,
+`rewrite::conjuncts` splits one into a constraint per term.
 
 ## What the evaluator is held to
 

@@ -26,9 +26,9 @@ use crate::ast::{
 use crate::diagnostics::{Problem, ProblemKind, Span};
 use crate::frontend::generated::lexer::BabelLexer;
 use crate::frontend::generated::parser::{
-    self, BabelParser, BooleanExprContext, BooleanPrimaryContext, LiteralContext,
-    ScalarBlockContext, ScalarEvaluableContext, ScalarExprContext, StatementBlockContext,
-    StatementContext,
+    self, BabelParser, BooleanExprContext, BooleanJunctionContext, BooleanPrimaryContext,
+    JunctorContext, LiteralContext, ScalarBlockContext, ScalarEvaluableContext, ScalarExprContext,
+    StatementBlockContext, StatementContext,
 };
 
 /// Everything compilation learns from walking the parse tree: the tree as
@@ -440,9 +440,9 @@ impl SemanticTranslator<'_> {
         state: &mut TranslationState,
     ) -> Result<Expr, Vec<Problem>> {
         let premise_ctx = ctx
-            .boolean_primary()
-            .expect("booleanExpr requires a booleanPrimary");
-        let premise = self.translate_boolean_primary(&premise_ctx, state)?;
+            .boolean_junction()
+            .expect("booleanExpr requires a booleanJunction");
+        let premise = self.translate_boolean_junction(&premise_ctx, state)?;
 
         let Some(conclusion_ctx) = ctx.boolean_expr() else {
             return Ok(premise);
@@ -467,6 +467,55 @@ impl SemanticTranslator<'_> {
             },
             span_of(ctx),
         ))
+    }
+
+    /// `booleanPrimary (junctor booleanPrimary)*`: one primary as it is, or a
+    /// run of one connective as one flat `And` or `Or`.
+    ///
+    /// The grammar admits a mixed run; it is refused here, at the first
+    /// connective that differs from the one before it, because `and` and `or`
+    /// together have no precedence every reader shares
+    /// ([`ProblemKind::MixedConnectives`]). A bracketed run is a
+    /// `booleanPrimary` and passes.
+    fn translate_boolean_junction(
+        &self,
+        ctx: &BooleanJunctionContext<'_>,
+        state: &mut TranslationState,
+    ) -> Result<Expr, Vec<Problem>> {
+        let junctors: Vec<_> = ctx.junctor_children().collect();
+        let primaries: Vec<_> = ctx.boolean_primary_children().collect();
+        assert_eq!(
+            primaries.len(),
+            junctors.len() + 1,
+            "a junction is its primaries with a connective between each pair"
+        );
+
+        let is_and = |junctor: &JunctorContext<'_>| junctor.and_token().is_some();
+        if let Some(first) = junctors.first()
+            && let Some(changed) = junctors
+                .iter()
+                .find(|junctor| is_and(junctor) != is_and(first))
+        {
+            return Err(vec![Problem::new(
+                ProblemKind::MixedConnectives,
+                self.source,
+                span_of(changed),
+            )]);
+        }
+
+        let mut terms = Vec::with_capacity(primaries.len());
+        for primary in &primaries {
+            terms.push(self.translate_boolean_primary(primary, state)?);
+        }
+        let Some(first) = junctors.first() else {
+            return Ok(terms.pop().expect("a junction has at least one primary"));
+        };
+        let kind = if is_and(first) {
+            Kind::And { terms }
+        } else {
+            Kind::Or { terms }
+        };
+        Ok(Expr::new(kind, span_of(ctx)))
     }
 
     // These survive compilation as `Kind::Compare` and `Kind::NearEq`. Each

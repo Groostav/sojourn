@@ -307,11 +307,49 @@ thing to read, and is the first work item rather than an admission.
          model is `x1 * x2 == 0`'s plan per arm, chosen per point by
          `classify::tightest`: one plan driving `y` where `p` holds, one free plan where
          it fails.
-      3. **No other connective.** `and` is a list of constraints, and `or` is
-         `not a implies b`, which is awkward but expressible. A user story that writes
-         `or` often is the reason to add it, and it would bind tighter than `implies`.
-         The grammar refuses a bare chain of implications (`ChainedImplication`), so
-         admitting it later, right-associative, breaks nothing.
+      3. ~~**No other connective.**~~ Overtaken the next day: `and` and `or` shipped
+         in the same 0.5.0, below. The grammar still refuses a bare chain of
+         implications (`ChainedImplication`), so admitting it later,
+         right-associative, breaks nothing.
+
+- [x] **`and`, `or`, and a root `and` split into constraints.** *2026-11-05.* A
+      nested implication is a conjunction written awkwardly (`a implies (b implies
+      c)` is `(a and b) implies c`), so the connectives came next. Decisions:
+      - **Precedence is the logician's and Dafny's:** comparisons, then `and`/`or`,
+        then `implies`. `a and b implies c` is `(a and b) implies c`, the reading
+        "under these conditions, this holds" wants nearly always.
+      - **`and` with `or` unbracketed is refused** (`MixedConnectives`), as Dafny
+        refuses `&&` with `||`, rather than given a precedence. That leaves no table
+        to remember: only `implies` splits a constraint into a condition and a claim.
+      - **No `not`.** Every comparison has a complement the author can write, and
+        `not (a implies b)` invites a reading nobody means.
+      - **`or` is `Kind::Or`, lowered to `Best`**; `and` reuses `Kind::And`, which
+        `invert_monotone` already emitted. Neither touched `hc4`, the executors or
+        WGSL: the folds and `Best`'s backward rule were already there.
+      - **A root `and` in a `ConstraintSystem` is a constraint per term**
+        (`frontend::rewrite::conjuncts`), because `classify` reads a constraint by
+        its root: `x == y +/- 0.1 and z < 3` drove nothing as one constraint.
+        Binding is checked on the whole first, so an unbound name is one error with
+        every caret. Each part keeps the whole source and its own spans, which is
+        the entire source-linkage design: a caret, a runtime fault or a blamed
+        `ConstraintRef::part` lands in the author's line with no table between.
+        Each part's symbols are renumbered to what it names, and it keeps only the
+        assignments it reaches, since `classify::shape` reads any block with an
+        assignment as opaque. `compile` and `compile_system` keep an `and` whole:
+        they evaluate, they do not search.
+
+      Follow-ups, each waiting on a fixture:
+      - `p implies (a and b)` is `p implies a` with `p implies b`, also exact, and
+        would let each conclusion be specialised apart.
+      - Per-leaf specialisation of `Best`: in a prune leaf where `hc4`'s forward pass
+        shows a premise certainly true, `p implies q` is `q`; certainly false, it is
+        vacuous. A root `NearEq` reappears for `classify` with no new sampling theory.
+      - Driving in general. A coordinate is drivable where its slice is thin, and
+        the general statement is the implicit function theorem over the active set:
+        `classify`'s matching is the structural rank of the incidence pattern, and a
+        cycle it drives neither of is a Dulmage–Mendelsohn block that could be
+        solved jointly. That shares the reverse sweep and the active set with the
+        gradient seed below, so design the two together.
 
 - [ ] **Seed by the gradient; COBYLA is the fallback, not the rung.** *2026-11-04.*
       Why the seed is COBYLA at all is history, not a decision: `local::find_initial`

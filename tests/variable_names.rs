@@ -42,6 +42,16 @@ fn when_the_name_is_the_implies_keyword_should_be_illegal() {
     assert_legal("x_implies");
 }
 
+/// `and` and `or` are keywords since 0.5.0, beside `implies`.
+#[test]
+fn when_the_name_is_a_connective_keyword_should_be_illegal() {
+    assert_illegal("and");
+    assert_illegal("or");
+    assert_legal("andy");
+    assert_legal("order");
+    assert_legal("x_or");
+}
+
 #[test]
 fn bare_number_is_illegal() {
     assert_illegal("3");

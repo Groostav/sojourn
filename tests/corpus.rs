@@ -332,6 +332,73 @@ fn implies_negates_an_inverted_premise_by_de_morgan() {
     }
 }
 
+// ------------------------------------------------------------- conjunction
+//
+// `a and b` is `max(a, b)`, `a or b` is `min(a, b)`: the folds a system of
+// constraints and an implication already were. Both bind tighter than
+// `implies` and looser than a comparison, and mixing them needs brackets.
+
+case!(and_is_the_worst_term:
+    // max(1 - 2 + EPSILON, 0 - 3 + EPSILON)
+    Case::new("x < 2 and y < 3", -1.0 + EPSILON)
+        .vars([("x", 1.0), ("y", 0.0)])
+        .boolean());
+
+case!(and_fails_on_one_term:
+    // max(1 - 2 + EPSILON, 4 - 3 + EPSILON)
+    Case::new("x < 2 and y < 3", 1.0 + EPSILON)
+        .vars([("x", 1.0), ("y", 4.0)])
+        .boolean());
+
+case!(and_of_three_terms:
+    // max(1 - 2, 4 - 3, (1 - 4) - -0.5)
+    Case::new("x <= 2 and y <= 3 and x - y <= -0.5", 1.0)
+        .vars([("x", 1.0), ("y", 4.0)])
+        .boolean());
+
+case!(or_is_the_best_term:
+    // min(1 - 2 + EPSILON, 4 - 3 + EPSILON)
+    Case::new("x < 2 or y < 3", -1.0 + EPSILON)
+        .vars([("x", 1.0), ("y", 4.0)])
+        .boolean());
+
+case!(or_of_three_terms:
+    // min(5 - 2, 4 - 3, 5 - 4 - 0.5)
+    Case::new("x <= 2 or y <= 3 or x - y <= 0.5", 0.5)
+        .vars([("x", 5.0), ("y", 4.0)])
+        .boolean());
+
+case!(and_binds_tighter_than_implies:
+    // (x > 0 and y > 0) implies x < y. The premise is false at x = -1, so not
+    // the premise is x <= 0 or y <= 0, min(-1 - 0, 2 - 0) = -1, the conclusion
+    // -1 - 2 + EPSILON, and min(-1, -3 + EPSILON) holds. Read as
+    // x > 0 and (y > 0 implies x < y) it would fail on x > 0, by 1 + EPSILON.
+    Case::new("x > 0 and y > 0 implies x < y", -3.0 + EPSILON)
+        .vars([("x", -1.0), ("y", 2.0)])
+        .boolean());
+
+case!(implies_binds_looser_than_a_conjunct_conclusion:
+    // x > 0 implies (y > 0 and y > 5): not the premise is x <= 0, -1, so
+    // min(-1, max(EPSILON, 5 + EPSILON)) = -1. Read as
+    // (x > 0 implies y > 0) and y > 5 it would fail by 5 + EPSILON.
+    Case::new("x > 0 implies y > 0 and y > 5", -1.0)
+        .vars([("x", -1.0), ("y", 0.0)])
+        .boolean());
+
+case!(bracketed_and_inside_or:
+    // min(max(1 - 2 + EPSILON, 5 - 3 + EPSILON), 0 - 1 + EPSILON)
+    Case::new("(x < 2 and y < 3) or x > 0", -1.0 + EPSILON)
+        .vars([("x", 1.0), ("y", 5.0)])
+        .boolean());
+
+case!(or_premise_at_a_tie:
+    // not (x < 0 or y < 0) is x >= 0 and y >= 0: max(0 - 0, 0 - 1) = 0. At
+    // x == 0 exactly the premise is false, so the implication holds whatever
+    // z is: min(0, 5 - 1 + EPSILON).
+    Case::new("(x < 0 or y < 0) implies z < 1", 0.0)
+        .vars([("x", 0.0), ("y", 1.0), ("z", 5.0)])
+        .boolean());
+
 // ------------------------------------------------------------------ nesting
 
 case!(nested_sum: Case::new("sum(3, 6, i -> sum(3, 3, j -> j + i))", 30.0));

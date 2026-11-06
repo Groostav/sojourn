@@ -164,6 +164,15 @@ rule: where one side is certainly above the target, the other must carry it, so 
 premise true over the box narrows the conclusion. `Min` as arithmetic still has
 no inverse. Faults stay eager: a conclusion that faults under a false premise
 fails the constraint (`tests/runtime_errors.rs`; `docs/todo.md` has the fix).
+`and` and `or` are the same two folds written out, `Kind::And` to `Worst` and
+`Kind::Or` to `Best`, and `negated` takes De Morgan through both. A run mixing
+them is refused (`MixedConnectives`) rather than given a precedence. **A root
+`and` in a `ConstraintSystem` is a constraint per term** (`rewrite::conjuncts`,
+after the whole has bound): each part keeps the author's source and spans, so a
+caret or a blamed `ConstraintRef::part` lands in the line as written, and gets
+its own symbols and only the assignments it reads, since incidence and
+`classify` read a constraint by its root and its symbols. `constraints()` and
+`ConstraintRef::index` still speak of what the caller wrote.
 
 **SIMD is explicit.** The tile executor's kernels live in `eval/simd.rs`, built
 on `pulp` with the instruction set picked at run time. Every operator is either

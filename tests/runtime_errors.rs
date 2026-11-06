@@ -116,6 +116,28 @@ fn when_a_conclusion_faults_under_a_false_premise_should_still_be_refused() {
     }
 }
 
+/// A fault in one term of an `and` is reported at that term, within the
+/// whole expression's text: the caret is the `*` whose `ln` failed, not the
+/// constraint.
+#[test]
+fn when_a_conjunct_faults_should_report_it_at_that_conjunct() {
+    // setup
+    let source = "x1 < 5 and x1 * ln(x1) < 1";
+
+    // act
+    let err = common::eval_one(source, &[("x1", -1.0)]).expect_err("ln(-1) is NaN");
+
+    // assert
+    match err {
+        EvaluationFailure::Runtime(p) => assert!(
+            p.problem.span.start >= 11,
+            "{:?} lands in the first term of {source:?}",
+            p.problem.span
+        ),
+        other => panic!("expected a runtime problem, got {other:?}"),
+    }
+}
+
 /// Overflow is a non-finite value like any other, and the case most likely to
 /// be a nuisance rather than a service. Pinned so that if it ever needs
 /// relaxing, a failing test says where the policy lives.

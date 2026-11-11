@@ -407,11 +407,12 @@ impl CompiledExpression {
     /// `f64`, which vanishes at any real magnitude and separates the two only
     /// at exact equality; `a == b +/- t` is `max(a - b - t, b - a - t)`, the
     /// distance outside the band, negative inside it; a conjunction is the
-    /// worst of its terms. An arithmetic expression evaluates to its value.
+    /// worst of its terms and a disjunction the best. An arithmetic expression
+    /// evaluates to its value.
     ///
-    /// Runs a tile of [`TILE`] columns at a time. The first failing column, in
-    /// order, is the one reported, naming the innermost subexpression that
-    /// went wrong.
+    /// Runs a fixed-width tile of columns at a time. The first failing
+    /// column, in order, is the one reported, naming the innermost
+    /// subexpression that went wrong.
     ///
     /// There is no single-sample entry point. There was, and it had no users
     /// outside its own tests: everything that evaluates babel evaluates many
